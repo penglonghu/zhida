@@ -93,7 +93,7 @@ async def upload_doc(file: UploadFile = File(...)):
             tmp.write(await file.read())
             tmp_path = Path(tmp.name)
         chunks = parse_and_chunk(tmp_path)
-        cnt = retriever.add_chunks(chunks)
+        cnt = retriever.add_chunks(chunks, doc_name=file.filename)
         tmp_path.unlink()
         logger.info(f"文档入库完成，生成chunk数量：{cnt}")
         return UploadResponse(msg="文件入库成功", chunk_count=cnt)
