@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import tempfile
 from pathlib import Path
@@ -71,8 +72,9 @@ async def stream_chat(req: StreamQueryRequest):
 
     async def gen():
         async for chunk in llm_client.stream_chat(user_query=user_msg, temperature=req.temperature):
-            # 保留标准SSE格式
-            yield f"data: {chunk}\n\n"
+            # SSE 的 data 字段必须单行，多行内容用 JSON 编码保证换行安全
+            yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 

@@ -329,9 +329,9 @@ async function sendQuestion() {
                 if (!block.trim()) continue;
                 if (!block.startsWith("data: ")) continue;
                 const payload = block.slice("data: ".length);
-                if (payload === "[DONE]") continue;
+                if (payload === "[DONE]") break;
 
-                fullText += payload;
+                fullText += JSON.parse(payload);
                 const fixed = preprocessMarkdown(fullText);
                 const html = marked.parse(fixed);
                 bubbleDom.innerHTML = DOMPurify.sanitize(html);
