@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # ===== Qdrant 向量库 =====
     qdrant_host: str = "127.0.0.1"
     qdrant_port: int = 6333
-    qdrant_collection_name: str = "fde_rag_demo"
+    qdrant_collection_name: str = "zhida"
     vector_dim: int = 512
 
     # ===== 检索 =====

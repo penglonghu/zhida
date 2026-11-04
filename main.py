@@ -14,7 +14,7 @@ from core.logging import setup_logging
 setup_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="FDE-POC-Demo", version="0.3-stage2-rag")
+app = FastAPI(title="知答 ZhiDa", version="0.1.0")
 
 
 @app.post("/query", response_model=QueryResponse, summary="同步问答接口（RAG增强）")
@@ -123,7 +123,7 @@ def list_chunks():
 
 @app.get("/health", summary="健康检查（客户监控必备）")
 def health():
-    return {"status": "ok", "version": "0.3-stage2-rag"}
+    return {"status": "ok", "name": "知答 ZhiDa", "version": "0.1.0"}
 
 app.add_middleware(
     CORSMiddleware,
