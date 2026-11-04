@@ -1,0 +1,1 @@
+fFDE是飞腾数字引擎演示项目，当前版本0.3-stage2-rag，集成了本地BGE向量模型+Qdrant向量库+MiniMax LLM。

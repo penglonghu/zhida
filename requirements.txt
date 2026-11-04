@@ -1,0 +1,11 @@
+# 原有
+fastapi
+uvicorn
+python-dotenv
+requests
+tenacity
+# 新增 RAG
+sentence-transformers
+qdrant-client
+pypdf
+python-multipart

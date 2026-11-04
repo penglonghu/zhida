@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FDE RAG 流式问答</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked@9.1.5/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+            max-width: 900px;
+            margin: 30px auto;
+            padding: 0 20px;
+            background-color: #f7f8fa;
+        }
+        .container {
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            overflow: hidden;
+        }
+        .header {
+            padding: 16px 20px;
+            background: #2563eb;
+            color: white;
+            font-weight: 600;
+        }
+        .upload-area {
+            padding: 14px 20px;
+            border-bottom: 1px solid #eee;
+            background: #fafbfc;
+            display: flex;
+            align-items: center;
+            gap:12px;
+            flex-wrap: wrap;
+        }
+        .upload-tip{
+            font-size:13px;
+            color:#666;
+        }
+        .chat-box {
+            height: 440px;
+            padding: 20px;
+            overflow-y: auto;
+            border-bottom: 1px solid #eee;
+        }
+        .msg {
+            margin-bottom: 16px;
+            line-height: 1.8;
+        }
+        .user-msg {
+            text-align: right;
+        }
+        .user-bubble {
+            display: inline-block;
+            background: #2563eb;
+            color: #fff;
+            padding: 10px 14px;
+            border-radius: 10px 2px 10px 10px;
+            max-width: 75%;
+            white-space: pre-wrap;
+        }
+        .assistant-bubble {
+            display: inline-block;
+            background: #eef2ff;
+            color: #374151;
+            padding: 12px 14px;
+            border-radius: 2px 10px 10px 10px;
+            max-width: 75%;
+        }
+        /* markdown 标题样式，降低粗度、控制字号，不突兀 */
+        .assistant-bubble h1,
+        .assistant-bubble h2,
+        .assistant-bubble h3,
+        .assistant-bubble h4 {
+            margin: 14px 0 6px;
+            font-weight: 500;
+            color: #111827;
+            letter-spacing: 0.2px;
+        }
+        .assistant-bubble h1 {
+            font-size: 17px;
+        }
+        .assistant-bubble h2 {
+            font-size: 15.5px;
+        }
+        .assistant-bubble h3 {
+            font-size: 14.5px;
+        }
+        .assistant-bubble h4 {
+            font-size: 14px;
+        }
+        .assistant-bubble p {
+            margin: 6px 0;
+        }
+        .assistant-bubble strong {
+            font-weight: 600;
+        }
+        .assistant-bubble ul,
+        .assistant-bubble ol {
+            padding-left: 22px;
+            margin: 6px 0;
+        }
+        .assistant-bubble li {
+            margin: 3px 0;
+        }
+        .input-area {
+            padding: 16px 20px;
+            display: flex;
+            gap: 10px;
+        }
+        textarea {
+            flex: 1;
+            padding: 10px 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            resize: none;
+            min-height: 44px;
+        }
+        button {
+            padding: 0 18px;
+            border: none;
+            border-radius: 8px;
+            background: #2563eb;
+            color: #fff;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:disabled {
+            background: #93b0f0;
+            cursor: not-allowed;
+        }
+        .clear-btn {
+            background: #6b7280;
+        }
+        .upload-btn{
+            background:#059669;
+        }
+        .tip {
+            color: #ef4444;
+            font-size: 13px;
+            padding: 8px 20px;
+            display: none;
+        }
+        .success-tip{
+            color:#059669;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">FDE-POC RAG 流式问答 (DeepSeek + 本地BGE)</div>
+    <div class="tip" id="tipBox"></div>
+
+    <div class="upload-area">
+        <input type="file" id="fileInput" accept=".txt,.md,.pdf">
+        <button class="upload-btn" id="uploadBtn">上传文档</button>
+        <span class="upload-tip">支持 txt / md / pdf，上传后自动入库</span>
+    </div>
+
+    <div class="chat-box" id="chatBox"></div>
+    <div class="input-area">
+        <textarea id="questionInput" placeholder="请输入问题... Enter发送，Shift+Enter换行" rows="1"></textarea>
+        <button id="sendBtn">发送</button>
+        <button class="clear-btn" id="clearBtn">清空对话</button>
+    </div>
+</div>
+
+<script>
+const API_BASE = "http://127.0.0.1:8000";
+const API_STREAM_URL = API_BASE + "/stream-query";
+const API_UPLOAD_URL = API_BASE + "/upload-doc";
+
+const chatBox = document.getElementById("chatBox");
+const questionInput = document.getElementById("questionInput");
+const sendBtn = document.getElementById("sendBtn");
+const clearBtn = document.getElementById("clearBtn");
+const tipBox = document.getElementById("tipBox");
+const fileInput = document.getElementById("fileInput");
+const uploadBtn = document.getElementById("uploadBtn");
+
+let isStreaming = false;
+let isUploading = false;
+
+marked.setOptions({
+    gfm: true,
+    breaks: true,
+    mangle: false,
+    headerIds: false
+});
+
+// 预处理：给紧贴文字的标题标记前面加上换行，保证markdown正常解析
+function preprocessMarkdown(text) {
+    text = text.replace(/([^\n])(#{1,4} )/g, '$1\n$2');
+    return text;
+}
+
+function showTip(msg, isSuccess=false){
+    tipBox.textContent = msg;
+    tipBox.style.display = "block";
+    tipBox.className = isSuccess ? "tip success-tip" : "tip";
+}
+function hideTip(){
+    tipBox.style.display = "none";
+}
+function setSendEnable(enable) {
+    sendBtn.disabled = !enable;
+    isStreaming = !enable;
+}
+function setUploadEnable(enable){
+    uploadBtn.disabled = !enable;
+    isUploading = !enable;
+}
+function escapeHtml(str) {
+    return str
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
+function appendUserMsg(text) {
+    const div = document.createElement("div");
+    div.className = "msg user-msg";
+    div.innerHTML = `<div class="user-bubble">${escapeHtml(text)}</div>`;
+    chatBox.appendChild(div);
+    scrollBottom();
+}
+function createAssistantBubble() {
+    const wrapper = document.createElement("div");
+    wrapper.className = "msg";
+    const bubble = document.createElement("div");
+    bubble.className = "assistant-bubble";
+    wrapper.appendChild(bubble);
+    chatBox.appendChild(wrapper);
+    scrollBottom();
+    return bubble;
+}
+function scrollBottom() {
+    chatBox.scrollTop = chatBox.scrollHeight;
+}
+
+async function uploadFile(){
+    hideTip();
+    const file = fileInput.files[0];
+    if(!file){
+        showTip("请先选择文件");
+        return;
+    }
+    const MAX_SIZE = 20 * 1024 * 1024;
+    if(file.size > MAX_SIZE){
+        showTip("文件不能超过20MB");
+        return;
+    }
+    setUploadEnable(false);
+    const formData = new FormData();
+    formData.append("file", file);
+    try{
+        const res = await fetch(API_UPLOAD_URL, {
+            method:"POST",
+            body: formData
+        });
+        const data = await res.json();
+        if(!res.ok){
+            throw new Error(data.detail || "上传失败");
+        }
+        showTip(`✅ 上传成功，chunk数量：${data.chunk_count}`, true);
+        fileInput.value = "";
+    }catch(e){
+        console.error(e);
+        showTip("上传异常：" + e.message);
+    }finally{
+        setUploadEnable(true);
+    }
+}
+
+async function sendQuestion() {
+    hideTip();
+    const q = questionInput.value.trim();
+    if (!q) return;
+
+    appendUserMsg(q);
+    questionInput.value = "";
+    setSendEnable(false);
+
+    const bubbleDom = createAssistantBubble();
+    let fullText = "";
+
+    try {
+        const resp = await fetch(API_STREAM_URL, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "accept": "*/*"
+            },
+            body: JSON.stringify({
+                question: q,
+                temperature: 0.1
+            })
+        });
+
+        if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
+        }
+        if (!resp.body) {
+            throw new Error("浏览器不支持ReadableStream");
+        }
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const blocks = buffer.split("\n\n");
+            buffer = blocks.pop() ?? "";
+
+            for (const block of blocks) {
+                if (!block.trim()) continue;
+                if (!block.startsWith("data: ")) continue;
+                const payload = block.slice("data: ".length);
+                if (payload === "[DONE]") continue;
+
+                fullText += payload;
+                const fixed = preprocessMarkdown(fullText);
+                const html = marked.parse(fixed);
+                bubbleDom.innerHTML = DOMPurify.sanitize(html);
+                scrollBottom();
+            }
+        }
+    } catch (err) {
+        console.error(err);
+        showTip("请求异常：" + err.message);
+        bubbleDom.textContent += "\n[流式中断]";
+    } finally {
+        setSendEnable(true);
+    }
+}
+
+sendBtn.addEventListener("click", sendQuestion);
+uploadBtn.addEventListener("click", uploadFile);
+
+questionInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendQuestion();
+    }
+});
+clearBtn.addEventListener("click", () => {
+    chatBox.innerHTML = "";
+    hideTip();
+});
+</script>
+</body>
+</html>
