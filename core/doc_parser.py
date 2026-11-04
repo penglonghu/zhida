@@ -8,15 +8,17 @@ CHUNK_SIZE = settings.chunk_size
 CHUNK_OVERLAP = settings.chunk_overlap
 
 
-def split_text(text: str) -> List[str]:
-    """简单中文递归分块，不依赖langchain"""
+def split_text(text: str, chunk_size: int | None = None, chunk_overlap: int | None = None) -> List[str]:
+    """简单中文递归分块，不依赖langchain。可覆盖全局 chunk_size/chunk_overlap，便于调参。"""
+    size = chunk_size if chunk_size is not None else CHUNK_SIZE
+    overlap_size = chunk_overlap if chunk_overlap is not None else CHUNK_OVERLAP
     separators = ["\n\n", "\n", "。", "！", "？", "，", " "]
 
     def _split(s: str, seps: list[str]) -> List[str]:
-        if len(s) <= CHUNK_SIZE:
+        if len(s) <= size:
             return [s]
         if not seps:
-            return [s[:CHUNK_SIZE]]
+            return [s[:size]]
         sep = seps[0]
         parts = s.split(sep)
         res = []
@@ -24,7 +26,7 @@ def split_text(text: str) -> List[str]:
         for p in parts:
             if not p.strip():
                 continue
-            if len(current + sep + p) > CHUNK_SIZE and current:
+            if len(current + sep + p) > size and current:
                 res.append(current.strip())
                 current = p
             else:
@@ -33,7 +35,7 @@ def split_text(text: str) -> List[str]:
             res.append(current.strip())
         final = []
         for seg in res:
-            if len(seg) > CHUNK_SIZE:
+            if len(seg) > size:
                 final.extend(_split(seg, seps[1:]))
             else:
                 final.append(seg)
@@ -41,7 +43,7 @@ def split_text(text: str) -> List[str]:
 
     raw_segments = _split(text, separators)
     # 增加overlap拼接
-    if CHUNK_OVERLAP <= 0:
+    if overlap_size <= 0:
         return raw_segments
     chunks = []
     for i, seg in enumerate(raw_segments):
@@ -49,7 +51,7 @@ def split_text(text: str) -> List[str]:
             chunks.append(seg)
         else:
             prev = raw_segments[i-1]
-            overlap = prev[-CHUNK_OVERLAP:] if len(prev) > CHUNK_OVERLAP else prev
+            overlap = prev[-overlap_size:] if len(prev) > overlap_size else prev
             new_chunk = overlap + seg
             chunks.append(new_chunk)
     return chunks
