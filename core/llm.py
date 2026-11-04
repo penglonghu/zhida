@@ -1,17 +1,16 @@
-import os
 import time
-from dotenv import load_dotenv
 import requests
 
-load_dotenv()
+from config import settings
+
 
 class LLMClient:
     def __init__(self):
-        self.api_url = os.getenv("LLM_API_URL")
-        self.api_key = os.getenv("LLM_API_KEY")
-        self.model_name = os.getenv("LLM_MODEL_NAME")
-        self.timeout = int(os.getenv("LLM_TIMEOUT", 3000)) / 1000
-        self.max_retry = int(os.getenv("LLM_MAX_RETRY", 3))
+        self.api_url = settings.llm_api_url
+        self.api_key = settings.llm_api_key
+        self.model_name = settings.llm_model_name
+        self.timeout = settings.llm_timeout / 1000.0
+        self.max_retry = settings.llm_max_retry
 
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",

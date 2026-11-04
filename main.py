@@ -1,8 +1,6 @@
 import logging
-import os
 import tempfile
 from pathlib import Path
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from schemas import QueryRequest, QueryResponse, StreamQueryRequest, UploadResponse, ClearResponse, ChunkListResponse
@@ -10,13 +8,11 @@ from core.llm import llm_client
 from core.rag_retriever import retriever
 from core.doc_parser import parse_and_chunk
 from fastapi.middleware.cors import CORSMiddleware
-
-# 加载环境变量
-load_dotenv()
+from config import settings
 
 # FDE重点：持久化日志，现场排错用，不要只用print
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
+    level=settings.log_level,
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
         logging.FileHandler("logs/service.log", encoding="utf-8"),
@@ -145,6 +141,6 @@ if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         "main:app",
-        host=os.getenv("SERVICE_HOST", "0.0.0.0"),
-        port=int(os.getenv("SERVICE_PORT", 8000))
+        host=settings.service_host,
+        port=settings.service_port
     )

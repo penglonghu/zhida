@@ -1,14 +1,13 @@
-import os
 from typing import List
 from sentence_transformers import SentenceTransformer
-from dotenv import load_dotenv
 
-load_dotenv()
+from config import settings
+
 
 class EmbeddingClient:
     def __init__(self):
-        self.model_name = os.getenv("EMBED_MODEL_NAME", "BAAI/bge-small-zh")
-        self.device = os.getenv("EMBED_DEVICE", "auto")
+        self.model_name = settings.embed_model_name
+        self.device = settings.embed_device
         self._model = None  # 先不加载
 
     @property

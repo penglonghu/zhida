@@ -1,30 +1,22 @@
-import os
 import uuid
 from typing import List
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
-from dotenv import load_dotenv
 from core.embedding import embedding_client
+from config import settings
 
-load_dotenv()
-
-QDRANT_HOST = os.getenv("QDRANT_HOST")
-QDRANT_PORT = int(os.getenv("QDRANT_PORT"))
-COLLECTION_NAME = os.getenv("QDRANT_COLLECTION_NAME", "fde_rag_demo")
-VECTOR_DIM = int(os.getenv("VECTOR_DIM", 512))
-TOP_K = int(os.getenv("RETRIEVE_TOP_K", 3))
 
 class Retriever:
     def __init__(self):
         self._client = None
-        self.collection_name = COLLECTION_NAME
-        self.vector_dim = VECTOR_DIM
+        self.collection_name = settings.qdrant_collection_name
+        self.vector_dim = settings.vector_dim
 
     @property
     def client(self):
         if self._client is None:
-            print(f"[QDRANT] 连接 {QDRANT_HOST}:{QDRANT_PORT}")
-            self._client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+            print(f"[QDRANT] 连接 {settings.qdrant_host}:{settings.qdrant_port}")
+            self._client = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
         return self._client
 
     def ensure_collection(self):
@@ -56,7 +48,7 @@ class Retriever:
             collection_name=self.collection_name,
             query=query_vec,
             with_payload=True,
-            limit=TOP_K
+            limit=settings.retrieve_top_k
         )
         return [hit.payload["text"] for hit in res.points]
 
@@ -69,5 +61,6 @@ class Retriever:
         scroll_res = self.client.scroll(collection_name=self.collection_name, with_payload=True, limit=1000)
         chunks = [p.payload["text"] for p in scroll_res[0]]
         return chunks
+
 
 retriever = Retriever()

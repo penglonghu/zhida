@@ -1,12 +1,11 @@
-import os
 from pathlib import Path
 from typing import List
 from pypdf import PdfReader
-from dotenv import load_dotenv
 
-load_dotenv()
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 500))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", 80))
+from config import settings
+
+CHUNK_SIZE = settings.chunk_size
+CHUNK_OVERLAP = settings.chunk_overlap
 
 
 def split_text(text: str) -> List[str]:
