@@ -1,6 +1,7 @@
 # 原有
 fastapi
 uvicorn
+httpx
 python-dotenv
 pydantic-settings
 requests

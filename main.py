@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import tempfile
 from pathlib import Path
@@ -18,11 +19,11 @@ app = FastAPI(title="知答 ZhiDa", version="0.1.0")
 
 
 @app.post("/query", response_model=QueryResponse, summary="同步问答接口（RAG增强）")
-def chat(req: QueryRequest):
+async def chat(req: QueryRequest):
     logger.info(f"收到同步请求 question={req.question}, doc_ids={req.doc_ids}, temperature={req.temperature}")
     try:
-        # RAG检索：获取相关文本片段（doc_ids预留，当前暂未实现文档过滤）
-        context_list = retriever.search(req.question)
+        # RAG检索：本地 embedding + Qdrant 是阻塞调用，放线程池避免卡住事件循环
+        context_list = await asyncio.to_thread(retriever.search, req.question)
         context_str = "\n".join(context_list)
 
         # 拼接参考资料上下文
@@ -36,7 +37,7 @@ def chat(req: QueryRequest):
         else:
             user_msg = req.question
 
-        answer = llm_client.chat(user_query=user_msg, temperature=req.temperature)
+        answer = await llm_client.chat(user_query=user_msg, temperature=req.temperature)
         resp = QueryResponse(
             answer=answer,
             question=req.question,
@@ -52,10 +53,10 @@ def chat(req: QueryRequest):
 
 
 @app.post("/stream-query", summary="SSE流式问答接口（RAG增强，演示用）")
-def stream_chat(req: StreamQueryRequest):
+async def stream_chat(req: StreamQueryRequest):
     logger.info(f"收到流式请求 question={req.question}, temperature={req.temperature}")
-    # RAG检索上下文
-    context_list = retriever.search(req.question)
+    # RAG检索上下文（阻塞调用，放线程池）
+    context_list = await asyncio.to_thread(retriever.search, req.question)
     context_str = "\n".join(context_list)
 
     if context_str:
@@ -68,8 +69,8 @@ def stream_chat(req: StreamQueryRequest):
     else:
         user_msg = req.question
 
-    def gen():
-        for chunk in llm_client.stream_chat(user_query=user_msg, temperature=req.temperature):
+    async def gen():
+        async for chunk in llm_client.stream_chat(user_query=user_msg, temperature=req.temperature):
             # 保留标准SSE格式
             yield f"data: {chunk}\n\n"
     return StreamingResponse(gen(), media_type="text/event-stream")

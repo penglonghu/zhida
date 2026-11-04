@@ -1,5 +1,7 @@
-import time
-import requests
+import asyncio
+import json
+
+import httpx
 
 from config import settings
 
@@ -11,6 +13,7 @@ class LLMClient:
         self.model_name = settings.llm_model_name
         self.timeout = settings.llm_timeout / 1000.0
         self.max_retry = settings.llm_max_retry
+        self._client = None
 
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -45,7 +48,13 @@ class LLMClient:
         - 关键风险：全球波动、IPO流动性虹吸、政策力度不及预期
         """
 
-    def chat(self, user_query: str, temperature: float = 0.1) -> str:
+    @property
+    def client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self.timeout)
+        return self._client
+
+    async def chat(self, user_query: str, temperature: float = 0.1) -> str:
         payload = {
             "model": self.model_name,
             "messages": [
@@ -57,11 +66,10 @@ class LLMClient:
         }
         for attempt in range(self.max_retry):
             try:
-                resp = requests.post(
+                resp = await self.client.post(
                     self.api_url,
                     headers=self.headers,
                     json=payload,
-                    timeout=self.timeout
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -69,9 +77,9 @@ class LLMClient:
             except Exception as e:
                 if attempt == self.max_retry - 1:
                     raise e
-                time.sleep(1)
+                await asyncio.sleep(1)
 
-    def stream_chat(self, user_query: str, temperature: float = 0.1):
+    async def stream_chat(self, user_query: str, temperature: float = 0.1):
         payload = {
             "model": self.model_name,
             "messages": [
@@ -83,33 +91,30 @@ class LLMClient:
         }
         for attempt in range(self.max_retry):
             try:
-                resp = requests.post(
+                async with self.client.stream(
+                    "POST",
                     self.api_url,
                     headers=self.headers,
                     json=payload,
-                    timeout=self.timeout,
-                    stream=True
-                )
-                resp.raise_for_status()
-                # SSE解析
-                for line in resp.iter_lines():
-                    if not line:
-                        continue
-                    line = line.decode("utf-8")
-                    if line.startswith("data: "):
-                        chunk_data = line[6:]
-                        if chunk_data == "[DONE]":
-                            break
-                        import json
-                        obj = json.loads(chunk_data)
-                        delta = obj["choices"][0]["delta"].get("content")
-                        if delta:
-                            yield delta
+                ) as resp:
+                    resp.raise_for_status()
+                    # SSE解析
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+                        if line.startswith("data: "):
+                            chunk_data = line[6:]
+                            if chunk_data == "[DONE]":
+                                break
+                            obj = json.loads(chunk_data)
+                            delta = obj["choices"][0]["delta"].get("content")
+                            if delta:
+                                yield delta
                 return
             except Exception as e:
                 if attempt == self.max_retry - 1:
                     raise e
-                time.sleep(1)
+                await asyncio.sleep(1)
 
 
 llm_client = LLMClient()
