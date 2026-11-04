@@ -7,7 +7,7 @@ hit@k：gold 出现在 top-k 命中里的查询占比（成功@k）。
 MRR  ：gold 首次出现位置的倒数平均，衡量排序质量。
 
 用法：
-    .venv/bin/python scripts/eval_retrieval.py [--top-k 3] [--testset scripts/testset.json]
+    .venv/bin/python scripts/eval_retrieval.py [--top-k 3] [--mode dense|hybrid] [--testset scripts/testset.json]
 """
 import argparse
 import json
@@ -24,14 +24,17 @@ def load_testset(path: Path) -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def evaluate(testset: list[dict], top_k: int) -> dict:
+def evaluate(testset: list[dict], top_k: int, mode: str = "dense") -> dict:
     hit_count = 0
     rr_sum = 0.0
     rows = []
     for item in testset:
         question = item["question"]
         gold = item["gold"]
-        results = retriever.search_with_score(question, limit=top_k)
+        if mode == "hybrid":
+            results = retriever.search_hybrid_with_score(question, limit=top_k)
+        else:
+            results = retriever.search_dense_with_score(question, limit=top_k)
 
         rank = None
         for i, h in enumerate(results, start=1):
@@ -64,13 +67,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--testset", type=str, default="scripts/testset.json")
+    parser.add_argument("--mode", type=str, default="dense", choices=["dense", "hybrid"])
     args = parser.parse_args()
 
     testset = load_testset(Path(args.testset))
-    result = evaluate(testset, args.top_k)
+    result = evaluate(testset, args.top_k, args.mode)
 
     print(f"测试集条数 : {result['total']}")
     print(f"top_k      : {args.top_k}")
+    print(f"mode       : {args.mode}")
     print(f"hit@{args.top_k}   : {result['hit_rate']:.2%}  ({result['hit_count']}/{result['total']})")
     print(f"MRR        : {result['mrr']:.3f}")
     print("-" * 70)
