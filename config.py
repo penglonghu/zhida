@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     hybrid_dense_candidates: int = 20     # 混合检索：稠密召回候选数
     hybrid_keyword_candidates: int = 20   # 混合检索：关键词召回候选数
     rrf_k: int = 60                        # RRF 融合的平滑常数
+    rrf_dense_weight: float = 1.0          # RRF 稠密信号权重
+    rrf_keyword_weight: float = 3.0        # RRF 关键词信号权重（精确 token 应更可信）
 
 
 settings = Settings()

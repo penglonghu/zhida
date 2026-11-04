@@ -141,13 +141,13 @@ class Retriever:
         # 2) 关键词召回候选（BM25）
         kw_top = self._bm25.search(query, settings.hybrid_keyword_candidates)
 
-        # 3) RRF 融合：同一文档在两条排序列表里的排名倒数之和
+        # 3) RRF 融合：同一文档在两条排序列表里的加权排名倒数之和
         rrf: Dict[str, float] = {}
         for rank, p in enumerate(dense_res.points, start=1):
-            rrf[str(p.id)] = rrf.get(str(p.id), 0.0) + 1.0 / (settings.rrf_k + rank)
+            rrf[str(p.id)] = rrf.get(str(p.id), 0.0) + settings.rrf_dense_weight / (settings.rrf_k + rank)
         for rank, (idx, _score) in enumerate(kw_top, start=1):
             pid = self._bm25_ids[idx]
-            rrf[pid] = rrf.get(pid, 0.0) + 1.0 / (settings.rrf_k + rank)
+            rrf[pid] = rrf.get(pid, 0.0) + settings.rrf_keyword_weight / (settings.rrf_k + rank)
 
         ranked = sorted(rrf.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
         hits = []
