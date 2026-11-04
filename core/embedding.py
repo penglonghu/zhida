@@ -1,7 +1,10 @@
+import logging
 from typing import List
 from sentence_transformers import SentenceTransformer
 
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class EmbeddingClient:
@@ -13,9 +16,9 @@ class EmbeddingClient:
     @property
     def model(self):
         if self._model is None:
-            print(f"[EMBED] 开始加载模型: {self.model_name}")
+            logger.info("开始加载模型: %s", self.model_name)
             self._model = SentenceTransformer(self.model_name, device=self.device)
-            print(f"[EMBED] 模型加载完成")
+            logger.info("模型加载完成")
         return self._model
 
     def encode(self, texts: List[str]) -> List[List[float]]:

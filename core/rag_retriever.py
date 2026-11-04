@@ -1,9 +1,12 @@
+import logging
 import uuid
 from typing import List
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from core.embedding import embedding_client
 from config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class Retriever:
@@ -15,14 +18,14 @@ class Retriever:
     @property
     def client(self):
         if self._client is None:
-            print(f"[QDRANT] 连接 {settings.qdrant_host}:{settings.qdrant_port}")
+            logger.info("连接 %s:%s", settings.qdrant_host, settings.qdrant_port)
             self._client = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
         return self._client
 
     def ensure_collection(self):
         exist = self.client.collection_exists(self.collection_name)
         if not exist:
-            print(f"[QDRANT] 创建集合 {self.collection_name}, dim={self.vector_dim}")
+            logger.info("创建集合 %s, dim=%s", self.collection_name, self.vector_dim)
             self.client.create_collection(
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(size=self.vector_dim, distance=Distance.COSINE)

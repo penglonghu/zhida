@@ -9,16 +9,9 @@ from core.rag_retriever import retriever
 from core.doc_parser import parse_and_chunk
 from fastapi.middleware.cors import CORSMiddleware
 from config import settings
+from core.logging import setup_logging
 
-# FDE重点：持久化日志，现场排错用，不要只用print
-logging.basicConfig(
-    level=settings.log_level,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.FileHandler("logs/service.log", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
+setup_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="FDE-POC-Demo", version="0.3-stage2-rag")
@@ -84,6 +77,8 @@ def stream_chat(req: StreamQueryRequest):
 
 @app.post("/upload-doc", response_model=UploadResponse, summary="上传文档入库（pdf/txt/md）")
 async def upload_doc(file: UploadFile = File(...)):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="缺少文件名")
     logger.info(f"收到文档上传：filename={file.filename}")
     suffix = Path(file.filename).suffix.lower()
     if suffix not in [".pdf", ".txt", ".md"]:
