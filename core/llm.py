@@ -13,6 +13,7 @@ class LLMClient:
         self.model_name = settings.llm_model_name
         self.timeout = settings.llm_timeout / 1000.0
         self.max_retry = settings.llm_max_retry
+        self.retry_delay_base = settings.llm_retry_delay_base
         self._client = None
 
         self.headers = {
@@ -48,6 +49,10 @@ class LLMClient:
         - 关键风险：全球波动、IPO流动性虹吸、政策力度不及预期
         """
 
+    def _backoff(self, attempt: int) -> float:
+        # 指数退避：基数 * 2^attempt，即 2s、4s、8s…
+        return self.retry_delay_base * (2 ** attempt)
+
     @property
     def client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -77,7 +82,7 @@ class LLMClient:
             except Exception as e:
                 if attempt == self.max_retry - 1:
                     raise e
-                await asyncio.sleep(1)
+                await asyncio.sleep(self._backoff(attempt))
 
     async def stream_chat(self, user_query: str, temperature: float = 0.1):
         payload = {
@@ -114,7 +119,7 @@ class LLMClient:
             except Exception as e:
                 if attempt == self.max_retry - 1:
                     raise e
-                await asyncio.sleep(1)
+                await asyncio.sleep(self._backoff(attempt))
 
 
 llm_client = LLMClient()
