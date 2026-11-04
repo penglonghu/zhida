@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 import httpx
 
@@ -21,33 +22,15 @@ class LLMClient:
             "Content-Type": "application/json"
         }
 
-        self.system_prompt = """
-        你是知识库问答助手，严格遵守下面全部规则：
-        1. 只能使用参考资料原文内容，没有相关信息固定输出：【当前资料中没有该问题相关内容，无法回答】，禁止编造。
-        2. 输出格式强制要求：
-        - 一级标题 # 单独一行，前后保留换行；
-        - 二级标题 ## 单独一行；
-        - 列表项以 `- ` 开头，每条单独一行；
-        - 不同板块之间必须空一行（连续两个换行符 \n\n）；
-        - 重点文字使用 **文字** 加粗；
-        - 你输出的字符串里，必须真实写入换行符 \n，不能省略换行；
-        - 禁止所有文字挤在同一行。
+        self._system_prompt = None
 
-        输出样例：
-        # 中国股票策略研报观点汇总
-        研报日期：2026年7月23日｜覆盖机构：J.P.Morgan、MorganStanley
-
-        ## 一、两家机构核心观点对比
-        **J.P.Morgan（摩根大通）**
-        - 核心观点：AI引发的去杠杆后，政策托底信号（PolicyPut）显现，2Q业绩将成为催化剂
-        - 市场偏好：中性偏多，结构性强于总量
-        - 关键风险：内需疲弱、房地产拖累、消费降级
-
-        **MorganStanley（摩根士丹利）**
-        - 核心观点：A股情绪在政策真空与IPO担忧中降温，但港股更具吸引力
-        - 市场偏好：短期看港股，长期看A股科技
-        - 关键风险：全球波动、IPO流动性虹吸、政策力度不及预期
-        """
+    @property
+    def system_prompt(self) -> str:
+        # prompt_reload_on_each_call=True 时每次请求重读文件，实现改提示词免重启
+        if self._system_prompt is None or settings.prompt_reload_on_each_call:
+            path = Path(settings.prompt_dir) / "system.md"
+            self._system_prompt = path.read_text(encoding="utf-8")
+        return self._system_prompt
 
     def _backoff(self, attempt: int) -> float:
         # 指数退避：基数 * 2^attempt，即 2s、4s、8s…
