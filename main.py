@@ -183,8 +183,8 @@ def health():
     return {"status": "ok", "name": "知答 ZhiDa", "version": "0.1.0"}
 
 
-@app.get("/ready", summary="就绪探针：检查 Qdrant 连通与模型文件")
-def ready():
+@app.get("/ready", summary="就绪探针：检查 Qdrant 连通、Redis 连通与模型文件")
+async def ready():
     checks = {}
     try:
         retriever.client.collection_exists(settings.qdrant_collection_name)
@@ -193,6 +193,13 @@ def ready():
         checks["qdrant"] = f"down: {e}"
     model_dir = Path(settings.embed_model_name)
     checks["embedding_model"] = "ok" if (model_dir / "config_sentence_transformers.json").exists() else "missing"
+    if settings.redis_enabled:
+        try:
+            from core.redis_client import get_redis
+            await get_redis().ping()
+            checks["redis"] = "ok"
+        except Exception as e:
+            checks["redis"] = f"down: {e}"
     ok = all(v == "ok" for v in checks.values())
     return JSONResponse(status_code=200 if ok else 503, content={"ready": ok, "checks": checks})
 

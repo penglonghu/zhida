@@ -192,7 +192,13 @@ class RateLimitMiddleware:
 
         client = scope.get("client")
         client_ip = client[0] if client else "-"
-        if not await self._limiter.allow(client_ip):
+        try:
+            allowed = await self._limiter.allow(client_ip)
+        except Exception:
+            # fail-open：限流是防护性功能，Redis 挂了宁可放行，也不能把整个服务搞挂。
+            logger.warning("限流后端不可用，fail-open 放行（ip=%s）", client_ip, exc_info=True)
+            allowed = True
+        if not allowed:
             await self._reject(send, 429, b'{"detail":"too many requests"}')
             return
         await self.app(scope, receive, send)
