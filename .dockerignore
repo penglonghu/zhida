@@ -29,3 +29,7 @@ logs/
 docs_local/
 tmp/
 test.txt
+
+# 真实个人文档（含手机号/邮箱）与 Redis 运行时数据
+jianli.pdf
+redis_data/

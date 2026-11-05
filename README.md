@@ -42,6 +42,7 @@ RAG 知识库问答系统：上传文档 → 分块 → 本地 BGE 嵌入 → Qd
 ├── scripts/             # 评估、调参、入库、启动脚本
 ├── docs/                # 合成评估语料
 ├── chat.html            # 前端
+├── deploy/nginx.conf    # 生产反向代理（统一入口 + 静态托管）
 ├── Dockerfile
 └── docker-compose.yml
 ```
@@ -81,15 +82,17 @@ python download_bge.py
 # 2. 配置
 cp .env.example .env   # 填入真实 LLM_API_KEY
 
-# 3. 构建并启动
+# 3. 构建并启动（nginx + zhida + qdrant + redis 四个服务）
 docker compose up -d --build
 
-# 4. 验证
-curl http://localhost:8000/health
-curl http://localhost:8000/ready
+# 4. 验证（统一走 nginx 的 80 端口入口）
+curl http://localhost/health
+curl http://localhost/ready
 ```
 
-compose 会自动覆盖 `QDRANT_HOST=qdrant`、`EMBED_DEVICE=cpu`、`REDIS_ENABLED=true`、`REDIS_HOST=redis`（容器内网络名、Linux 推理设备、多实例共享态）。
+浏览器打开 `http://localhost` 即可使用（nginx 托管 chat.html 并反代 API）。
+
+compose 会自动覆盖 `QDRANT_HOST=qdrant`、`EMBED_DEVICE=cpu`、`REDIS_ENABLED=true`、`REDIS_HOST=redis`（容器内网络名、Linux 推理设备、多实例共享态）。生产形态下应用（zhida）与向量库（qdrant）不对外暴露端口，统一由 nginx 的 80 端口入口；将来加 HTTPS 只需改 `deploy/nginx.conf`。
 
 ## 配置说明
 

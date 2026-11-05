@@ -174,7 +174,8 @@
 </div>
 
 <script>
-const API_BASE = "http://127.0.0.1:8000";
+// 本地 file:// 打开直连后端；生产经 nginx 访问时走同源相对路径（nginx 反代 /query 等）
+const API_BASE = location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
 const API_STREAM_URL = API_BASE + "/stream-query";
 const API_UPLOAD_URL = API_BASE + "/upload-doc";
 
