@@ -1,8 +1,12 @@
 """多轮会话存储：按 session_id 记住问答历史，供 LLM 理解上下文。
 
-POC 版存进程内存：重启即丢、多 worker 不共享。
-S4/S5 上线前要换成 Redis（或数据库），否则多实例会串会话、也无法审计。
+两种后端，通过 config.redis_enabled 切换：
+- MemoryConversationStore：进程内存 dict，单实例够用，重启即丢、多 worker 不共享。
+- RedisConversationStore：外部 Redis 共享，多 worker/多实例读写同一份历史。
+
+接口统一为 async（FastAPI 事件循环内不阻塞），main.py 用 await 调用。
 """
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -21,7 +25,9 @@ class Conversation:
     updated_at: float = field(default_factory=time.time)
 
 
-class ConversationStore:
+class MemoryConversationStore:
+    """进程内存实现：单实例可用，重启即丢、多 worker 不共享。"""
+
     def __init__(self, max_turns: int = None, ttl_seconds: int = None):
         self.max_turns = max_turns if max_turns is not None else settings.conversation_max_turns
         self.ttl_seconds = ttl_seconds if ttl_seconds is not None else settings.conversation_ttl_seconds
@@ -34,7 +40,7 @@ class ConversationStore:
         for sid in expired:
             del self._store[sid]
 
-    def get_history(self, session_id: str) -> List[dict]:
+    async def get_history(self, session_id: str) -> List[dict]:
         """返回 OpenAI messages 格式的会话历史（不含 system）。"""
         c = self._store.get(session_id)
         if c is None:
@@ -45,7 +51,7 @@ class ConversationStore:
             msgs.append({"role": "assistant", "content": turn["answer"]})
         return msgs
 
-    def append(self, session_id: str, question: str, answer: str) -> None:
+    async def append(self, session_id: str, question: str, answer: str) -> None:
         c = self._store.get(session_id)
         if c is None:
             c = Conversation(session_id=session_id)
@@ -56,8 +62,73 @@ class ConversationStore:
         c.updated_at = time.time()
         self._expire()
 
-    def clear(self, session_id: str) -> bool:
+    async def clear(self, session_id: str) -> bool:
         return self._store.pop(session_id, None) is not None
 
 
-conversation_store = ConversationStore()
+class RedisConversationStore:
+    """Redis 实现：所有实例共享同一份会话历史。
+
+    value 存 JSON 数组 [{"question","answer"}, ...]；TTL 用 Redis 原生
+    EXPIRE，每次 append 续期，取代内存版的惰性过期。
+    """
+
+    # 原子 append：读-改-写若拆成 GET + SET 两条命令，多实例并发会丢更新
+    # （A、B 都读到旧值 → A 写 → B 写覆盖 A 的新轮）。用 Lua 在 Redis 服务端
+    # 单线程内一次完成「读 + 追加 + 截断 + 写 + 续期」，天然无竞态。
+    _APPEND_LUA = """
+    local raw = redis.call('GET', KEYS[1])
+    local turns = {}
+    if raw then
+        turns = cjson.decode(raw)
+    end
+    turns[#turns + 1] = cjson.decode(ARGV[1])
+    local max_turns = tonumber(ARGV[2])
+    if #turns > max_turns then
+        local keep = {}
+        for i = #turns - max_turns + 1, #turns do
+            keep[#keep + 1] = turns[i]
+        end
+        turns = keep
+    end
+    redis.call('SET', KEYS[1], cjson.encode(turns))
+    redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+    return 1
+    """
+
+    def __init__(self, max_turns: int = None, ttl_seconds: int = None):
+        from core.redis_client import get_redis
+
+        self.max_turns = max_turns if max_turns is not None else settings.conversation_max_turns
+        self.ttl_seconds = ttl_seconds if ttl_seconds is not None else settings.conversation_ttl_seconds
+        self._redis = get_redis()
+        self._append_script = self._redis.register_script(self._APPEND_LUA)
+
+    def _key(self, session_id: str) -> str:
+        return f"{settings.redis_prefix}:session:{session_id}"
+
+    async def get_history(self, session_id: str) -> List[dict]:
+        raw = await self._redis.get(self._key(session_id))
+        if not raw:
+            return []
+        turns = json.loads(raw)
+        msgs: List[dict] = []
+        for turn in turns:
+            msgs.append({"role": "user", "content": turn["question"]})
+            msgs.append({"role": "assistant", "content": turn["answer"]})
+        return msgs
+
+    async def append(self, session_id: str, question: str, answer: str) -> None:
+        turn = json.dumps({"question": question, "answer": answer}, ensure_ascii=False)
+        await self._append_script(
+            keys=[self._key(session_id)],
+            args=[turn, self.max_turns, self.ttl_seconds],
+        )
+
+    async def clear(self, session_id: str) -> bool:
+        return bool(await self._redis.delete(self._key(session_id)))
+
+
+conversation_store = (
+    RedisConversationStore() if settings.redis_enabled else MemoryConversationStore()
+)

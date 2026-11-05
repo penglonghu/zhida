@@ -70,7 +70,7 @@ async def chat(req: QueryRequest):
     session_id = req.session_id or uuid.uuid4().hex
     logger.info(f"收到同步请求 session={session_id[:8]}, question={req.question}, temperature={req.temperature}")
     try:
-        history = conversation_store.get_history(session_id)
+        history = await conversation_store.get_history(session_id)
 
         # 追问改写：把「那它呢」这类依赖上文的追问变成独立查询，再拿去检索
         search_query = req.question
@@ -83,7 +83,7 @@ async def chat(req: QueryRequest):
         messages = history + [{"role": "user", "content": user_msg}]
 
         answer = await llm_client.chat(messages, temperature=req.temperature)
-        conversation_store.append(session_id, req.question, answer)
+        await conversation_store.append(session_id, req.question, answer)
 
         return QueryResponse(
             answer=answer,
@@ -102,7 +102,7 @@ async def stream_chat(req: StreamQueryRequest):
     session_id = req.session_id or uuid.uuid4().hex
     logger.info(f"收到流式请求 session={session_id[:8]}, question={req.question}, temperature={req.temperature}")
 
-    history = conversation_store.get_history(session_id)
+    history = await conversation_store.get_history(session_id)
     search_query = req.question
     if settings.query_rewrite_enabled and history:
         search_query = await llm_client.rewrite_query(history, req.question)
@@ -118,7 +118,7 @@ async def stream_chat(req: StreamQueryRequest):
             answer_parts.append(chunk)
             # SSE 的 data 字段必须单行，多行内容用 JSON 编码保证换行安全
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-        conversation_store.append(session_id, req.question, "".join(answer_parts))
+        await conversation_store.append(session_id, req.question, "".join(answer_parts))
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")
@@ -161,8 +161,8 @@ def clear_collection():
 
 
 @app.post("/clear-session", response_model=ClearResponse, summary="清除某个会话的多轮历史")
-def clear_session(req: SessionClearRequest):
-    existed = conversation_store.clear(req.session_id)
+async def clear_session(req: SessionClearRequest):
+    existed = await conversation_store.clear(req.session_id)
     logger.info(f"清除会话 session={req.session_id[:8]}, existed={existed}")
     return ClearResponse(msg="会话已清除" if existed else "会话不存在或已过期")
 

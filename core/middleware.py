@@ -116,15 +116,68 @@ class AuthMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
-class RateLimitMiddleware:
-    """内存滑动窗口限流（按客户端 IP），标准库实现，零新增依赖。
+class MemoryRateLimiter:
+    """内存滑动窗口限流（按 IP）：记录每次请求时间戳，精确到毫秒边界。
 
-    注意：与会话存储同理，内存实现只对单实例有效，多实例要换 Redis。
+    仅单实例有效——多 worker/实例各记各的，限流会失效。
     """
+
+    def __init__(self, max_requests: int = None, window_seconds: int = None):
+        self.max_requests = max_requests if max_requests is not None else settings.rate_limit_max_requests
+        self.window_seconds = window_seconds if window_seconds is not None else settings.rate_limit_window_seconds
+        self._hits = defaultdict(deque)
+
+    async def allow(self, client_ip: str) -> bool:
+        now = time.time()
+        q = self._hits[client_ip]
+        while q and now - q[0] > self.window_seconds:
+            q.popleft()
+        if len(q) >= self.max_requests:
+            return False
+        q.append(now)
+        return True
+
+
+class RedisRateLimiter:
+    """Redis 固定窗口限流（按 IP）：INCR 计数，首次计数时设置窗口过期。
+
+    多实例共享同一个计数器，天然全局生效。固定窗口在窗口边界处可能有
+    少量突刺（上一窗口末尾 + 下一窗口开头的请求都算进新窗口），但对
+    问答服务足够；实现比滑动窗口（ZSET 删过期成员）简单得多。
+    """
+
+    # 原子 INCR + 首次 EXPIRE：两条命令若拆开，多实例并发时可能都读到
+    # current>1 而都不设过期，导致 key 永不过期。Lua 在服务端一次完成。
+    _INCR_LUA = """
+    local current = redis.call('INCR', KEYS[1])
+    if current == 1 then
+        redis.call('EXPIRE', KEYS[1], ARGV[1])
+    end
+    return current
+    """
+
+    def __init__(self, max_requests: int = None, window_seconds: int = None):
+        from core.redis_client import get_redis
+
+        self.max_requests = max_requests if max_requests is not None else settings.rate_limit_max_requests
+        self.window_seconds = window_seconds if window_seconds is not None else settings.rate_limit_window_seconds
+        self._redis = get_redis()
+        self._incr_script = self._redis.register_script(self._INCR_LUA)
+
+    def _key(self, client_ip: str) -> str:
+        return f"{settings.redis_prefix}:ratelimit:{client_ip}"
+
+    async def allow(self, client_ip: str) -> bool:
+        current = await self._incr_script(keys=[self._key(client_ip)], args=[self.window_seconds])
+        return int(current) <= self.max_requests
+
+
+class RateLimitMiddleware:
+    """限流中间件：按 redis_enabled 选择内存滑动窗口或 Redis 固定窗口。"""
 
     def __init__(self, app):
         self.app = app
-        self._hits = defaultdict(deque)
+        self._limiter = RedisRateLimiter() if settings.redis_enabled else MemoryRateLimiter()
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -139,14 +192,9 @@ class RateLimitMiddleware:
 
         client = scope.get("client")
         client_ip = client[0] if client else "-"
-        now = time.time()
-        q = self._hits[client_ip]
-        while q and now - q[0] > settings.rate_limit_window_seconds:
-            q.popleft()
-        if len(q) >= settings.rate_limit_max_requests:
+        if not await self._limiter.allow(client_ip):
             await self._reject(send, 429, b'{"detail":"too many requests"}')
             return
-        q.append(now)
         await self.app(scope, receive, send)
 
     async def _reject(self, send, status: int, body: bytes):

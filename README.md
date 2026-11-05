@@ -9,7 +9,7 @@ RAG 知识库问答系统：上传文档 → 分块 → 本地 BGE 嵌入 → Qd
 | 接入层 | FastAPI（异步，SSE 流式） |
 | 推理层 | DeepSeek（OpenAI 兼容网关，httpx 异步 + 指数退避重试） |
 | 检索层 | 本地 BGE-small-zh 稠密向量 + BM25 关键词，加权 RRF 融合 |
-| 存储层 | Qdrant 向量库 |
+| 存储层 | Qdrant 向量库 + Redis（会话/限流共享态，可选） |
 | 前端 | chat.html（原生 JS + marked 渲染） |
 
 ## 核心特性
@@ -33,7 +33,8 @@ RAG 知识库问答系统：上传文档 → 分块 → 本地 BGE 嵌入 → Qd
 │   ├── bm25.py          # 零依赖 BM25 分词与打分
 │   ├── embedding.py     # 本地 BGE 嵌入
 │   ├── doc_parser.py    # 文档解析 + 分块
-│   ├── conversation.py  # 多轮会话存储
+│   ├── conversation.py  # 多轮会话存储（内存/Redis 双后端）
+│   ├── redis_client.py  # Redis 连接单例（多实例共享态）
 │   ├── middleware.py    # trace/审计/认证/限流中间件
 │   ├── tracing.py       # trace_id 上下文
 │   └── logging.py       # 集中式日志 + trace 注入
@@ -88,7 +89,7 @@ curl http://localhost:8000/health
 curl http://localhost:8000/ready
 ```
 
-compose 会自动覆盖 `QDRANT_HOST=qdrant`、`EMBED_DEVICE=cpu`（容器内网络名与 Linux 推理设备）。
+compose 会自动覆盖 `QDRANT_HOST=qdrant`、`EMBED_DEVICE=cpu`、`REDIS_ENABLED=true`、`REDIS_HOST=redis`（容器内网络名、Linux 推理设备、多实例共享态）。
 
 ## 配置说明
 
@@ -102,6 +103,7 @@ compose 会自动覆盖 `QDRANT_HOST=qdrant`、`EMBED_DEVICE=cpu`（容器内网
 | `RETRIEVAL_MODE` | `hybrid`（混合）或 `dense`（纯稠密） |
 | `AUTH_ENABLED` / `SERVICE_API_KEY` | 认证开关 / 密钥（私有化交付置 true） |
 | `RATE_LIMIT_MAX_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | 限流阈值 / 窗口 |
+| `REDIS_ENABLED` / `REDIS_HOST` | 会话/限流共享存储开关 / 地址（多实例置 true） |
 
 ## API 一览
 
@@ -157,6 +159,6 @@ curl -X POST localhost:8000/query \
 
 ## 已知限制
 
-- 会话存储、限流均为**进程内存实现**，单实例可用；多实例/高可用需换 Redis（规划中）
+- 会话存储、限流默认**进程内存实现**（单实例够用）；设 `REDIS_ENABLED=true` 即切 Redis 共享态，支持多实例横向扩展
 - 混合检索权重（`RRF_KEYWORD_WEIGHT=3.0`）基于合成语料调优，上线前应在真实语料重新评估
 - 嵌入模型懒加载，首次请求会触发加载（数秒~数十秒）

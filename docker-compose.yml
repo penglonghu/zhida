@@ -6,14 +6,18 @@ services:
     env_file:
       - .env
     environment:
-      # Docker 内覆盖：连 compose 里的 qdrant 服务；Linux 用 CPU 推理
+      # Docker 内覆盖：连 compose 里的 qdrant/redis 服务；Linux 用 CPU 推理
       QDRANT_HOST: qdrant
       EMBED_DEVICE: cpu
+      # 多实例部署：会话/限流走 Redis 共享（单实例可关）
+      REDIS_ENABLED: "true"
+      REDIS_HOST: redis
     volumes:
       - ./logs:/app/logs
       - ./models:/app/models       # 嵌入模型随包挂载，不打进镜像
     depends_on:
       - qdrant
+      - redis
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3)"]
       interval: 15s
@@ -29,3 +33,10 @@ services:
     volumes:
       - ./qdrant_storage:/qdrant/storage
     restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - ./redis_data:/data        # RDB 持久化，容器重启不丢会话/限流计数
+    # 仅 compose 内网访问，不对外暴露端口（会话与限流是应用内部状态）

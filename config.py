@@ -70,5 +70,12 @@ class Settings(BaseSettings):
     rate_limit_max_requests: int = 60      # 窗口内最大请求数
     rate_limit_window_seconds: int = 60    # 限流窗口（秒）
 
+    # ===== Redis（多实例高可用）=====
+    redis_enabled: bool = False            # 会话/限流共享存储：False=进程内存（单实例够用），True=Redis（多实例横向扩展）
+    redis_host: str = "127.0.0.1"
+    redis_port: int = 6379
+    redis_db: int = 0
+    redis_prefix: str = "zhida"            # key 前缀：多环境/多租户隔离，避免 key 冲突
+
 
 settings = Settings()
