@@ -188,6 +188,7 @@ const uploadBtn = document.getElementById("uploadBtn");
 
 let isStreaming = false;
 let isUploading = false;
+let sessionId = null;   // 多轮会话ID：首次发送时生成并复用，让服务端记住上下文
 
 marked.setOptions({
     gfm: true,
@@ -199,6 +200,11 @@ marked.setOptions({
 // 预处理：给紧贴文字的标题标记前面加上换行，保证markdown正常解析
 function preprocessMarkdown(text) {
     text = text.replace(/([^\n])(#{1,4} )/g, '$1\n$2');
+    // 只处理 ** 紧贴 ASCII 标点的场景（% + 等），不碰中文，避免误拆 **北京**。
+    const PUNCT = "%+/,.#$~=():;?!<>_-";
+    const cls = "[" + PUNCT.replace(/[\]\\^]/g, "\\$&") + "]";
+    text = text.replace(new RegExp("\\*\\*(?=" + cls + ")", "g"), " **");
+    text = text.replace(new RegExp("(?<=" + cls + ")\\*\\*", "g"), "** ");
     return text;
 }
 
@@ -294,6 +300,9 @@ async function sendQuestion() {
     let fullText = "";
 
     try {
+        if (!sessionId) {
+            sessionId = crypto.randomUUID();
+        }
         const resp = await fetch(API_STREAM_URL, {
             method: "POST",
             headers: {
@@ -302,6 +311,7 @@ async function sendQuestion() {
             },
             body: JSON.stringify({
                 question: q,
+                session_id: sessionId,
                 temperature: 0.1
             })
         });
@@ -358,6 +368,7 @@ questionInput.addEventListener("keydown", (e) => {
 });
 clearBtn.addEventListener("click", () => {
     chatBox.innerHTML = "";
+    sessionId = null;   // 清空后重新开一轮对话
     hideTip();
 });
 </script>

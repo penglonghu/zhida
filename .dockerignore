@@ -1,0 +1,31 @@
+# 环境变量与密钥
+.env
+.env.*
+
+# Python 缓存与虚拟环境
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 模型（大文件，运行时 volume 挂载，不打进镜像）
+models/
+
+# 向量库与日志（运行时数据）
+qdrant_storage/
+logs/
+
+# 版本控制
+.git/
+.gitignore
+
+# IDE / 系统 / Claude
+.idea/
+.vscode/
+.claude/
+.DS_Store
+
+# 临时文件
+docs_local/
+tmp/
+test.txt

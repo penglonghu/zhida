@@ -45,3 +45,6 @@ qdrant_storage/
 # ===== 本地临时文档 =====
 docs_local/
 tmp/
+
+# ===== 真实个人文档（测试用扫描件，含手机号/邮箱，不入库）=====
+jianli.pdf

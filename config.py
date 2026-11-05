@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     llm_api_url: str
     llm_api_key: str
     llm_model_name: str = "deepseek-chat"
-    llm_timeout: int = 3000        # 单位：毫秒
+    llm_timeout: int = 60000       # 单位：毫秒（生成需时较长，3s 太短会频繁超时）
     llm_max_retry: int = 3
     llm_retry_delay_base: int = 2  # 预留：S1 指数退避基数
     llm_max_output_tokens: int = 2048
@@ -57,6 +57,18 @@ class Settings(BaseSettings):
     rrf_k: int = 60                        # RRF 融合的平滑常数
     rrf_dense_weight: float = 1.0          # RRF 稠密信号权重
     rrf_keyword_weight: float = 3.0        # RRF 关键词信号权重（精确 token 应更可信）
+
+    # ===== 多轮对话 =====
+    query_rewrite_enabled: bool = True     # 追问时先改写为独立查询再检索
+    conversation_max_turns: int = 10       # 每个会话最多保留的问答轮数
+    conversation_ttl_seconds: int = 3600   # 会话空闲过期时间（秒）
+
+    # ===== 安全可观测 =====
+    auth_enabled: bool = False             # 是否开启 API Key 认证（私有化交付时开，POC 先关）
+    service_api_key: str = ""              # 认证密钥（auth_enabled=True 时必填）
+    rate_limit_enabled: bool = True        # 是否开启限流
+    rate_limit_max_requests: int = 60      # 窗口内最大请求数
+    rate_limit_window_seconds: int = 60    # 限流窗口（秒）
 
 
 settings = Settings()

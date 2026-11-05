@@ -11,3 +11,7 @@ sentence-transformers
 qdrant-client
 pypdf
 python-multipart
+# 扫描件 OCR（图片型 PDF）
+pymupdf
+rapidocr-onnxruntime
+pillow

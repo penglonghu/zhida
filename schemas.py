@@ -4,17 +4,18 @@ from typing import List, Optional
 # ===== 问答schema =====
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=2, description="用户提问，不能为空")
-    doc_ids: Optional[List[str]] = Field(default=None, description="指定检索文档ID列表")
+    session_id: Optional[str] = Field(default=None, description="会话ID，不传则新开会话")
     temperature: float = Field(default=0.1, ge=0.0, le=1.0, description="模型温度，RAG场景一般偏低")
 
 class StreamQueryRequest(BaseModel):
     question: str = Field(..., min_length=2)
+    session_id: Optional[str] = Field(default=None, description="会话ID，不传则新开会话")
     temperature: float = Field(default=0.1, ge=0.0, le=1.0)
 
 class QueryResponse(BaseModel):
     answer: str
     question: str
-    doc_ids: Optional[List[str]] = None
+    session_id: Optional[str] = None
     success: bool
     msg: str
 
@@ -25,6 +26,9 @@ class UploadResponse(BaseModel):
 
 class ClearResponse(BaseModel):
     msg: str
+
+class SessionClearRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, description="要清除的会话ID")
 
 class ChunkListResponse(BaseModel):
     chunks: List[str]

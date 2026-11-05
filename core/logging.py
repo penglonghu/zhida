@@ -1,13 +1,28 @@
-"""集中式日志配置：文件 + 控制台双输出，幂等。
+"""集中式日志配置：文件 + 控制台双输出，幂等，自动注入 trace_id。
 
-各模块用 logging.getLogger(__name__) 拿自己的 logger，自动带上模块名，
-取代原来 core 里散落的 print()。
+各模块用 logging.getLogger(__name__) 拿自己的 logger，自动带上模块名。
+trace_id 通过 TraceFormatter 从 contextvars 读取，写入每条日志记录，
+让现场排错时能把同一请求散落各处的日志串起来。
 """
 import logging
 import sys
 from pathlib import Path
 
+from core.tracing import get_trace_id
+
 _configured = False
+
+
+class TraceFormatter(logging.Formatter):
+    """格式化时注入当前请求的 trace_id（contextvars 读取，无请求时补 "-"）。
+
+    用 Formatter 而非 Filter 的原因：logger 的 filter 只对「该 logger 直接
+    记录」的 record 生效，子 logger 传播上来的 record 不会经过父 logger 的
+    filter；而 formatter 挂在 handler 上，每条经过的 record 都会命中。
+    """
+    def format(self, record: logging.LogRecord) -> str:
+        record.trace_id = get_trace_id()
+        return super().format(record)
 
 
 def setup_logging(log_level: str = "INFO") -> None:
@@ -18,7 +33,9 @@ def setup_logging(log_level: str = "INFO") -> None:
     log_dir = Path("logs")
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+    formatter = TraceFormatter(
+        "%(asctime)s | %(levelname)s | trace=%(trace_id)s | %(name)s | %(message)s"
+    )
 
     file_handler = logging.FileHandler(log_dir / "service.log", encoding="utf-8")
     file_handler.setFormatter(formatter)
