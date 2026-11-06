@@ -131,6 +131,13 @@ async def retrieve_context(question: str, tenant_id: str, kb_id: str) -> tuple[s
     return build_context_and_sources(_prioritize_primary_doc(hits)[:limit])
 
 
+_NO_ANSWER = "当前资料中没有该问题相关内容"
+
+
+def _is_no_answer(answer: str) -> bool:
+    return _NO_ANSWER in answer
+
+
 def _has_citations(answer: str) -> bool:
     return re.search(r"\[\d+\]", answer) is not None
 
@@ -172,6 +179,9 @@ async def chat(req: QueryRequest, request: Request):
 
         answer = await llm_client.chat(messages, temperature=req.temperature)
         removed_citations, answer = await verify_and_fix_answer(answer, context_str)
+        if _is_no_answer(answer):
+            logger.info("资料未覆盖该问题，隐藏参考来源 tenant=%s, kb=%s", tenant_id, kb_id)
+            sources = []
         await conversation_store.append(tenant_id, session_id, req.question, answer)
 
         return QueryResponse(
@@ -208,8 +218,6 @@ async def stream_chat(req: StreamQueryRequest, request: Request):
     messages = history + [{"role": "user", "content": user_msg}]
 
     async def gen():
-        # 先发来源元数据（结构化事件），前端据此渲染引用列表
-        yield f"data: {json.dumps({'type': 'sources', 'sources': [s.model_dump() for s in sources]}, ensure_ascii=False)}\n\n"
         answer_parts = []
         async for chunk in llm_client.stream_chat(messages, temperature=req.temperature):
             answer_parts.append(chunk)
@@ -218,6 +226,11 @@ async def stream_chat(req: StreamQueryRequest, request: Request):
         answer = "".join(answer_parts)
         # 引用校验即修正：答案流完后再校验一次，删掉无依据的引用句，有改动才下发事件替换前端气泡
         removed, fixed_answer = await verify_and_fix_answer(answer, context_str)
+        # 资料未覆盖问题时不展示参考来源；sources 延后到答案结束后发，才能据此判断
+        final_sources = [] if _is_no_answer(fixed_answer) else sources
+        if not final_sources:
+            logger.info("资料未覆盖该问题，隐藏参考来源 tenant=%s, kb=%s", tenant_id, kb_id)
+        yield f"data: {json.dumps({'type': 'sources', 'sources': [s.model_dump() for s in final_sources]}, ensure_ascii=False)}\n\n"
         await conversation_store.append(tenant_id, session_id, req.question, fixed_answer)
         if removed:
             yield f"data: {json.dumps({'type': 'citation_fixed', 'removed': removed, 'fixed': fixed_answer}, ensure_ascii=False)}\n\n"
