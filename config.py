@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     # ===== LLM 网关（DeepSeek OpenAI 兼容） =====
     llm_api_url: str
     llm_api_key: str
-    llm_model_name: str = "deepseek-chat"
+    llm_model_name: str = "deepseek-flash"
     llm_timeout: int = 60000       # 单位：毫秒（生成需时较长，3s 太短会频繁超时）
     llm_max_retry: int = 3
     llm_retry_delay_base: int = 2  # 预留：S1 指数退避基数

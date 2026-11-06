@@ -100,7 +100,7 @@ compose 会自动覆盖 `QDRANT_HOST=qdrant`、`EMBED_DEVICE=cpu`、`REDIS_ENABL
 
 | 变量 | 说明 |
 |---|---|
-| `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL_NAME` | 大模型网关地址/密钥/模型名 |
+| `LLM_API_URL` / `LLM_API_KEY` / `LLM_MODEL_NAME` | 大模型网关地址/密钥/模型名。生产建议 `deepseek-flash`（旧别名 `deepseek-chat` 当前等同）；`deepseek-v4-pro` 贵 4~7 倍，RAG 无需 |
 | `EMBED_MODEL_NAME` / `EMBED_DEVICE` | 嵌入模型路径 / 推理设备（cpu/mps/cuda） |
 | `QDRANT_HOST` / `QDRANT_PORT` | 向量库地址（Docker 内用服务名 `qdrant`） |
 | `RETRIEVAL_MODE` | `hybrid`（混合）或 `dense`（纯稠密） |
