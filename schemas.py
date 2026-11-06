@@ -43,3 +43,6 @@ class SessionClearRequest(BaseModel):
 
 class ChunkListResponse(BaseModel):
     chunks: List[str]
+
+class KnowledgeBaseListResponse(BaseModel):
+    kbs: List[str]

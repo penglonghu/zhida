@@ -257,6 +257,12 @@ class Retriever:
             )
         self._invalidate_cache()
 
+    def list_kbs(self, tenant_id: Optional[str] = None) -> List[str]:
+        """当前租户下出现过的知识库 ID。"""
+        tenant_id = settings.default_tenant_id if tenant_id is None else tenant_id
+        self._load_points()
+        return sorted({h.kb_id for h in self._points.values() if h.tenant_id == tenant_id})
+
     def list_all_chunks(self, tenant_id: Optional[str] = None,
                         kb_id: Optional[str] = None) -> List[str]:
         self.ensure_collection()

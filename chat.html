@@ -44,6 +44,36 @@
             font-size:13px;
             color:#666;
         }
+        .kb-area {
+            padding: 12px 20px;
+            border-bottom: 1px solid #eee;
+            background: #f3f6fb;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .kb-area label {
+            font-size: 14px;
+            color: #374151;
+            font-weight: 500;
+        }
+        .kb-area input {
+            width: 180px;
+            height: 36px;
+            padding: 0 10px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        .kb-area button {
+            height: 36px;
+            padding: 0 14px;
+        }
+        .kb-hint {
+            font-size: 12px;
+            color: #6b7280;
+        }
         .chat-box {
             height: 440px;
             padding: 20px;
@@ -225,6 +255,14 @@
     <div class="header">知答 ZhiDa · RAG 知识库问答 (DeepSeek + 本地BGE)</div>
     <div class="tip" id="tipBox"></div>
 
+    <div class="kb-area">
+        <label for="kbInput">知识库</label>
+        <input type="text" id="kbInput" list="kbList" placeholder="default" autocomplete="off">
+        <datalist id="kbList"></datalist>
+        <button type="button" id="kbRefreshBtn">刷新列表</button>
+        <span class="kb-hint" id="kbHint">切换知识库会新开会话</span>
+    </div>
+
     <div class="upload-area">
         <input type="file" id="fileInput" accept=".txt,.md,.pdf">
         <button class="upload-btn" id="uploadBtn">上传文档</button>
@@ -244,6 +282,8 @@
 const API_BASE = location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
 const API_STREAM_URL = API_BASE + "/stream-query";
 const API_UPLOAD_URL = API_BASE + "/upload-doc";
+const API_KBS_URL = API_BASE + "/knowledge-bases";
+const KB_STORAGE_KEY = "zhida_kb";
 
 const chatBox = document.getElementById("chatBox");
 const questionInput = document.getElementById("questionInput");
@@ -252,10 +292,47 @@ const clearBtn = document.getElementById("clearBtn");
 const tipBox = document.getElementById("tipBox");
 const fileInput = document.getElementById("fileInput");
 const uploadBtn = document.getElementById("uploadBtn");
+const kbInput = document.getElementById("kbInput");
+const kbList = document.getElementById("kbList");
+const kbRefreshBtn = document.getElementById("kbRefreshBtn");
+const kbHint = document.getElementById("kbHint");
 
 let isStreaming = false;
 let isUploading = false;
 let sessionId = null;   // 多轮会话ID：首次发送时生成并复用，让服务端记住上下文
+
+function currentKb() {
+    return (kbInput.value || "").trim() || "default";
+}
+
+async function loadKbs() {
+    try {
+        const res = await fetch(API_KBS_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const kbs = data.kbs || [];
+        kbList.innerHTML = "";
+        for (const kb of kbs) {
+            const opt = document.createElement("option");
+            opt.value = kb;
+            kbList.appendChild(opt);
+        }
+        kbHint.textContent = `当前租户 ${kbs.length} 个知识库`;
+    } catch (e) {
+        console.warn("知识库列表获取失败", e);
+        kbHint.textContent = "知识库列表获取失败，可直接输入";
+    }
+}
+
+function switchKb() {
+    const kb = currentKb();
+    localStorage.setItem(KB_STORAGE_KEY, kb);
+    chatBox.innerHTML = "";
+    sessionId = null;   // 切库后历史上下文可能属于旧库，重新开会话
+    hideTip();
+    kbHint.textContent = `已切换到 ${kb}，新会话已开始`;
+    loadKbs();
+}
 
 marked.setOptions({
     gfm: true,
@@ -384,6 +461,7 @@ async function uploadFile(){
     setUploadEnable(false);
     const formData = new FormData();
     formData.append("file", file);
+    formData.append("kb_id", currentKb());
     try{
         const res = await fetch(API_UPLOAD_URL, {
             method:"POST",
@@ -393,8 +471,9 @@ async function uploadFile(){
         if(!res.ok){
             throw new Error(data.detail || "上传失败");
         }
-        showTip(`✅ 上传成功，chunk数量：${data.chunk_count}`, true);
+        showTip(`✅ 上传成功（知识库：${currentKb()}），chunk数量：${data.chunk_count}`, true);
         fileInput.value = "";
+        loadKbs();
     }catch(e){
         console.error(e);
         showTip("上传异常：" + e.message);
@@ -432,6 +511,7 @@ async function sendQuestion() {
             body: JSON.stringify({
                 question: q,
                 session_id: sessionId,
+                kb_id: currentKb(),
                 temperature: 0.1
             })
         });
@@ -495,6 +575,16 @@ async function sendQuestion() {
 
 sendBtn.addEventListener("click", sendQuestion);
 uploadBtn.addEventListener("click", uploadFile);
+kbInput.value = localStorage.getItem(KB_STORAGE_KEY) || "default";
+kbInput.addEventListener("change", switchKb);
+kbInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+        e.preventDefault();
+        kbInput.blur();   // 触发 change，切换知识库
+    }
+});
+kbRefreshBtn.addEventListener("click", loadKbs);
+loadKbs();
 
 questionInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {

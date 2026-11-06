@@ -119,6 +119,7 @@ compose 会自动覆盖 `QDRANT_HOST=qdrant`、`EMBED_DEVICE=cpu`、`REDIS_ENABL
 | POST | `/upload-doc` | 上传文档入库（pdf/txt/md，可传 `kb_id` 表单字段） |
 | POST | `/clear-collection` | 清空当前租户的某个知识库（`?kb_id=`） |
 | POST | `/clear-session` | 清除当前租户的某会话历史 |
+| GET | `/knowledge-bases` | 列出当前租户的知识库（前端选择器用） |
 | GET | `/list-chunks` | 调试：查看当前租户/知识库的文本块 |
 | GET | `/health` | 存活探针 |
 | GET | `/ready` | 就绪探针（Qdrant 连通 + 模型文件） |

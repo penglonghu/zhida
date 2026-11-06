@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query, Reque
 from fastapi.responses import StreamingResponse, JSONResponse
 from schemas import (
     QueryRequest, QueryResponse, StreamQueryRequest, UploadResponse,
-    ClearResponse, ChunkListResponse, SessionClearRequest, Source,
+    ClearResponse, ChunkListResponse, KnowledgeBaseListResponse, SessionClearRequest, Source,
 )
 from core.llm import llm_client
 from core.rag_retriever import retriever, RetrievalHit
@@ -270,6 +270,15 @@ async def clear_session(req: SessionClearRequest, request: Request):
     existed = await conversation_store.clear(tenant_id, req.session_id)
     logger.info(f"清除会话 tenant={tenant_id}, session={req.session_id[:8]}, existed={existed}")
     return ClearResponse(msg="会话已清除" if existed else "会话不存在或已过期")
+
+
+@app.get("/knowledge-bases", response_model=KnowledgeBaseListResponse, summary="列出当前租户的知识库")
+def list_knowledge_bases(request: Request):
+    tenant_id = getattr(request.state, "tenant_id", settings.default_tenant_id)
+    kbs = set(retriever.list_kbs(tenant_id))
+    kbs.add(settings.default_kb_id)
+    ordered = sorted(kbs, key=lambda k: (k != settings.default_kb_id, k))
+    return KnowledgeBaseListResponse(kbs=ordered)
 
 
 @app.get("/list-chunks", response_model=ChunkListResponse, summary="调试接口：查看当前知识库的文本块")
