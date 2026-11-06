@@ -50,8 +50,8 @@ class Settings(BaseSettings):
     vector_dim: int = 512
 
     # ===== 检索 =====
-    retrieve_top_k: int = 3
-    list_query_top_k: int = 10            # 列举型问题（有几/多少/哪些/全部）用更大的召回，避免漏经历/条目
+    retrieve_top_k: int = 5       # 合同/制度类长文块高度相似，3 条常装不进答案块
+    list_query_top_k: int = 10            # 列举型问题（哪些/全部/几个）用更大的召回，避免漏经历/条目
     retrieval_mode: str = "hybrid"        # dense / hybrid
     hybrid_dense_candidates: int = 20     # 混合检索：稠密召回候选数
     hybrid_keyword_candidates: int = 20   # 混合检索：关键词召回候选数

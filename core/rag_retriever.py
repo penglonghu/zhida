@@ -130,16 +130,17 @@ class Retriever:
         if not self._points:
             return []
 
-        # 1) 稠密召回候选
+        # 1) 稠密召回候选（列举型会请求更深的 top_k，两路候选随之放大）
         query_vec = embedding_client.encode_single(query)
+        dense_limit = min(max(settings.hybrid_dense_candidates, top_k), len(self._points))
         dense_res = self.client.query_points(
             collection_name=self.collection_name,
             query=query_vec,
             with_payload=True,
-            limit=min(settings.hybrid_dense_candidates, len(self._points)),
+            limit=dense_limit,
         )
         # 2) 关键词召回候选（BM25）
-        kw_top = self._bm25.search(query, settings.hybrid_keyword_candidates)
+        kw_top = self._bm25.search(query, max(settings.hybrid_keyword_candidates, top_k))
 
         # 3) RRF 融合：同一文档在两条排序列表里的加权排名倒数之和
         rrf: Dict[str, float] = {}

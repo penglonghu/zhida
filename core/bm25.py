@@ -15,6 +15,10 @@ from typing import List, Tuple
 _ALNUM = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\-]*")
 _CJK = re.compile(r"[一-鿿]")
 
+# 查询侧停用字：由这些字构成的 bigram 多是「的甲」「是谁」这类语法噪声，
+# 在长文合同/制度里会压过真正的答案块。
+_STOP_CHARS = set("的了是在吗呢吧啊谁哪什么几多少这那请问")
+
 
 def tokenize(text: str) -> List[str]:
     tokens = [m.lower() for m in _ALNUM.findall(text)]
@@ -24,9 +28,14 @@ def tokenize(text: str) -> List[str]:
 
 
 class BM25:
-    def __init__(self, k1: float = 1.5, b: float = 0.75):
+    def __init__(self, k1: float = 1.5, b: float = 0.75,
+                 max_df_ratio: float = 0.3, min_df_cutoff: int = 5):
         self.k1 = k1
         self.b = b
+        # 查询词在超过 30% 的块里出现即视为泛词（如「甲方」「合同」），
+        # 只靠 tf 刷分而不具区分度，打分时忽略。小库用绝对阈值兜底。
+        self.max_df_ratio = max_df_ratio
+        self.min_df_cutoff = min_df_cutoff
         self.docs: List[Counter] = []
         self.doc_len: List[int] = []
         self.doc_freq: Counter = Counter()
@@ -50,16 +59,24 @@ class BM25:
         n = self.doc_freq.get(term, 0)
         return math.log((self.N - n + 0.5) / (n + 0.5) + 1)
 
+    def _query_terms(self, query: str) -> List[str]:
+        df_cutoff = max(self.min_df_cutoff, self.max_df_ratio * self.N)
+        return [
+            t for t in set(tokenize(query))
+            if not (len(t) == 2 and (t[0] in _STOP_CHARS or t[1] in _STOP_CHARS))
+            and self.doc_freq.get(t, 0) <= df_cutoff
+        ]
+
     def search(self, query: str, top_n: int) -> List[Tuple[int, float]]:
         """返回 [(doc_index, score)] 按分数降序，最多 top_n 条。"""
-        q_terms = tokenize(query)
+        q_terms = self._query_terms(query)
         if not q_terms or self.N == 0:
             return []
         scored: List[Tuple[int, float]] = []
         for i, tf in enumerate(self.docs):
             dl = self.doc_len[i]
             score = 0.0
-            for t in set(q_terms):
+            for t in q_terms:
                 f = tf.get(t, 0)
                 if f == 0:
                     continue

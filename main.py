@@ -80,19 +80,46 @@ def build_context_and_sources(hits: List[RetrievalHit]) -> tuple[str, List[Sourc
     return "\n\n".join(parts), sources
 
 
-# 列举型问题关键词：问「有几段/哪些/全部」需要遍历全文档，放大召回才不漏
-_LIST_QUERY_RE = re.compile(r"几|多少|哪些|全部|所有|分别|总共|有哪些|几种|几段|几项|几个")
+# 列举型问题关键词：问「有几段/哪些/全部」需要遍历全文档，放大召回才不漏。
+# 只用「量词」句式，裸「多少/几」会误伤「总金额是多少」这类单值事实问题。
+_LIST_QUERY_RE = re.compile(r"哪些|哪几|全部|所有|分别|列举|列出|几[个段项家种位条份]|多少[个段项家种位条份]")
 
 
 def _is_list_query(question: str) -> bool:
     return bool(_LIST_QUERY_RE.search(question))
 
 
+def _prioritize_primary_doc(hits):
+    """主文档显著领先时，把它的块排到最前，避免其他文档的块挤占 top_k。
+
+    多文档库里通用词（合同/工作）会把无关文档的块带进候选；列举型问题因此
+    漏掉主文档后半段的块。按文档 top3 分数聚合，领先 1.15 倍才重排；
+    分数接近（如跨文档比较）保持原序，不丢多文档能力。
+    """
+    by_doc = {}
+    for h in hits:
+        by_doc.setdefault(h.doc_name, []).append(h)
+    if len(by_doc) < 2:
+        return hits
+    agg = sorted(
+        ((sum(h.score for h in hs[:3]), doc) for doc, hs in by_doc.items()),
+        reverse=True,
+    )
+    if agg[0][0] < 1.15 * agg[1][0]:
+        return hits
+    best = agg[0][1]
+    return [h for h in hits if h.doc_name == best] + [h for h in hits if h.doc_name != best]
+
+
 async def retrieve_context(question: str) -> tuple[str, List[Source]]:
     """RAG 检索（阻塞调用放线程池），返回 (编号资料文本, 来源列表)。"""
-    limit = settings.list_query_top_k if _is_list_query(question) else settings.retrieve_top_k
-    hits = await asyncio.to_thread(retriever.search_with_meta, question, limit)
-    return build_context_and_sources(hits)
+    is_list = _is_list_query(question)
+    limit = settings.list_query_top_k if is_list else settings.retrieve_top_k
+    # 候选多于最终上下文，留出文档级聚合并给主文档补位的余量；
+    # 列举型需要覆盖主文档全部块，候选取更深
+    candidates = max(limit * 5, 50) if is_list else max(limit * 2, 20)
+    hits = await asyncio.to_thread(retriever.search_with_meta, question, candidates)
+    return build_context_and_sources(_prioritize_primary_doc(hits)[:limit])
 
 
 def _has_citations(answer: str) -> bool:
