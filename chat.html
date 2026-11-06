@@ -74,6 +74,12 @@
             font-size: 12px;
             color: #6b7280;
         }
+        .auth-area {
+            background: #fff;
+        }
+        .auth-area input {
+            width: 240px;
+        }
         .chat-box {
             height: 440px;
             padding: 20px;
@@ -255,6 +261,12 @@
     <div class="header">知答 ZhiDa · RAG 知识库问答 (DeepSeek + 本地BGE)</div>
     <div class="tip" id="tipBox"></div>
 
+    <div class="kb-area auth-area">
+        <label for="apiKeyInput">API Key</label>
+        <input type="password" id="apiKeyInput" placeholder="认证关闭时可留空" autocomplete="new-password">
+        <span class="kb-hint" id="apiKeyHint">仅保存在本标签页，关闭即清除</span>
+    </div>
+
     <div class="kb-area">
         <label for="kbInput">知识库</label>
         <input type="text" id="kbInput" list="kbList" placeholder="default" autocomplete="off">
@@ -284,6 +296,7 @@ const API_STREAM_URL = API_BASE + "/stream-query";
 const API_UPLOAD_URL = API_BASE + "/upload-doc";
 const API_KBS_URL = API_BASE + "/knowledge-bases";
 const KB_STORAGE_KEY = "zhida_kb";
+const API_KEY_STORAGE_KEY = "zhida_api_key";
 
 const chatBox = document.getElementById("chatBox");
 const questionInput = document.getElementById("questionInput");
@@ -296,6 +309,8 @@ const kbInput = document.getElementById("kbInput");
 const kbList = document.getElementById("kbList");
 const kbRefreshBtn = document.getElementById("kbRefreshBtn");
 const kbHint = document.getElementById("kbHint");
+const apiKeyInput = document.getElementById("apiKeyInput");
+const apiKeyHint = document.getElementById("apiKeyHint");
 
 let isStreaming = false;
 let isUploading = false;
@@ -305,9 +320,36 @@ function currentKb() {
     return (kbInput.value || "").trim() || "default";
 }
 
+function currentApiKey() {
+    return (apiKeyInput.value || "").trim();
+}
+
+function authHeaders(extra) {
+    const headers = Object.assign({}, extra || {});
+    const key = currentApiKey();
+    if (key) headers["X-API-Key"] = key;
+    return headers;
+}
+
+function saveApiKey() {
+    const key = currentApiKey();
+    if (key) sessionStorage.setItem(API_KEY_STORAGE_KEY, key);
+    else sessionStorage.removeItem(API_KEY_STORAGE_KEY);
+    // 换 Key 可能换租户，旧会话与知识库列表都不再可信
+    chatBox.innerHTML = "";
+    sessionId = null;
+    hideTip();
+    apiKeyHint.textContent = key ? "已保存在本标签页" : "未设置（认证关闭时可用）";
+    loadKbs();
+}
+
 async function loadKbs() {
     try {
-        const res = await fetch(API_KBS_URL);
+        const res = await fetch(API_KBS_URL, { headers: authHeaders() });
+        if (res.status === 401) {
+            kbHint.textContent = "API Key 无效或未填写";
+            return;
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const kbs = data.kbs || [];
@@ -465,8 +507,13 @@ async function uploadFile(){
     try{
         const res = await fetch(API_UPLOAD_URL, {
             method:"POST",
+            headers: authHeaders(),
             body: formData
         });
+        if (res.status === 401) {
+            showTip("API Key 无效或未填写");
+            return;
+        }
         const data = await res.json();
         if(!res.ok){
             throw new Error(data.detail || "上传失败");
@@ -504,10 +551,10 @@ async function sendQuestion() {
         }
         const resp = await fetch(API_STREAM_URL, {
             method: "POST",
-            headers: {
+            headers: authHeaders({
                 "Content-Type": "application/json",
                 "accept": "*/*"
-            },
+            }),
             body: JSON.stringify({
                 question: q,
                 session_id: sessionId,
@@ -516,6 +563,9 @@ async function sendQuestion() {
             })
         });
 
+        if (resp.status === 401) {
+            throw new Error("API Key 无效或未填写（401）");
+        }
         if (!resp.ok) {
             throw new Error(`HTTP ${resp.status}`);
         }
@@ -576,6 +626,15 @@ async function sendQuestion() {
 sendBtn.addEventListener("click", sendQuestion);
 uploadBtn.addEventListener("click", uploadFile);
 kbInput.value = localStorage.getItem(KB_STORAGE_KEY) || "default";
+apiKeyInput.value = sessionStorage.getItem(API_KEY_STORAGE_KEY) || "";
+if (apiKeyInput.value) apiKeyHint.textContent = "已保存在本标签页";
+apiKeyInput.addEventListener("change", saveApiKey);
+apiKeyInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+        e.preventDefault();
+        apiKeyInput.blur();   // 触发 change，保存并刷新
+    }
+});
 kbInput.addEventListener("change", switchKb);
 kbInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {

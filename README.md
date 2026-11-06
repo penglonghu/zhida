@@ -146,6 +146,8 @@ curl -X POST localhost:8000/query \
   -d '{"question":"..."}'
 ```
 
+`chat.html` 顶部有 API Key 输入框：仅保存在当前标签页的 `sessionStorage`，关闭标签页即清除；问答、上传、知识库列表请求都会自动带 `X-API-Key`。更换 Key 等同于更换租户，会重置当前会话。
+
 ### 多租户 / 知识库隔离
 
 - 每次请求的隔离键是 `(tenant_id, kb_id)`：`tenant_id` 由 API Key 决定，`kb_id` 由请求参数决定（上传用表单 `kb_id`，问答用 JSON `kb_id`，清库/列块用查询参数），默认 `default`。
