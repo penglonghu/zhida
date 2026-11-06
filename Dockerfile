@@ -2,6 +2,12 @@ FROM python:3.14
 
 WORKDIR /app
 
+# OCR 图像渲染系统依赖：opencv-python 需要 libGL.so.1 与 libglib2.0-0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
 # pip 镜像源：默认清华（国内直连可用），客户内网可通过 build-arg 覆盖为自建源
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 # CPU 版 torch 源：RAG 用 CPU 推理，避免拉 ~2GB 的 CUDA nvidia 依赖

@@ -42,6 +42,20 @@ _SEP_AFTER_EMAIL = re.compile(rf"({_EMAIL_RE})[1lI](?=[一-龥])")
 # 只匹配 "1" 而非 l/I，避免把罗马数字 I 误当分隔符
 _SEP_CJK_LATIN = re.compile(r"(?<=[一-龥])1(?=[A-Za-z])")
 
+# ---- OCR 专有名词纠错（词典，仅作用于扫描件 OCR 路径）----
+# RapidOCR 对个别公司/机构名识别不稳（马蜂窝→马蜂旁、麒麟软件→橱软件），
+# 关键词通道(BM25)因此漏召。词典是定制化的，不同文档错误不同，按需扩充。
+_ENTITY_FIX = {
+    "马蜂旁": "马蜂窝",
+    "橱软件": "麒麟软件",
+}
+
+
+def _fix_entities(text: str) -> str:
+    for wrong, right in _ENTITY_FIX.items():
+        text = text.replace(wrong, right)
+    return text
+
 
 def _fix_phone_field(m):
     prefix = m.group(0)[: m.start(1) - m.start(0)]
@@ -104,10 +118,25 @@ def _ocr_pdf(file_path: Path) -> str:
     return "\n".join(parts)
 
 
+# 起止时间段：2014.10-2022.07 / 2025.11－至今 / 2008.10~2012.01
+_TIME_RANGE_RE = re.compile(
+    r"\d{4}[.．]\d{1,2}\s*[-－—至~]\s*(?:\d{4}[.．]\d{1,2}|至今|现在)"
+)
+
+
+def _anchor_time_ranges(text: str) -> str:
+    """在每段起止时间前插换行，作为分块的结构锚点，让经历/事件按时间段切分。"""
+    spans = [m.start() for m in _TIME_RANGE_RE.finditer(text)]
+    for pos in reversed(spans):
+        text = text[:pos] + "\n" + text[pos:]
+    return text
+
+
 def split_text(text: str, chunk_size: int | None = None, chunk_overlap: int | None = None) -> List[str]:
     """简单中文递归分块，不依赖langchain。可覆盖全局 chunk_size/chunk_overlap，便于调参。"""
     size = chunk_size if chunk_size is not None else CHUNK_SIZE
     overlap_size = chunk_overlap if chunk_overlap is not None else CHUNK_OVERLAP
+    text = _anchor_time_ranges(text)
     separators = ["\n\n", "\n", "。", "！", "？", "，", " "]
 
     def _split(s: str, seps: list[str]) -> List[str]:
@@ -160,7 +189,7 @@ def parse_file(file_path: Path) -> str:
         content = _extract_pdf_text(file_path)
         if not content.strip():
             # 文本层为空 → 扫描件/图片型 PDF，回退 OCR
-            content = _ocr_pdf(file_path)
+            content = _fix_entities(_ocr_pdf(file_path))
     elif suffix in [".txt", ".md"]:
         content = file_path.read_text(encoding="utf-8", errors="ignore")
     if content:
