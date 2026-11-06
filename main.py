@@ -142,6 +142,15 @@ def _has_citations(answer: str) -> bool:
     return re.search(r"\[\d+\]", answer) is not None
 
 
+def _filter_used_sources(answer: str, sources: List[Source]) -> List[Source]:
+    """只保留答案里实际引用到的来源，避免展示检索到但没用上的无关片段。"""
+    cited = {int(n) for n in re.findall(r"\[(\d+)\]", answer)}
+    if not cited:
+        # 模型偶尔没标引用：无法判断用了哪些，保守保留全部
+        return sources
+    return [s for s in sources if s.index in cited]
+
+
 async def verify_and_fix_answer(answer: str, context_str: str) -> tuple[List[int], str]:
     """引用校验即修正：返回 (被移除的无依据 [n] 编号列表, 修正后的答案)。
 
@@ -182,6 +191,8 @@ async def chat(req: QueryRequest, request: Request):
         if _is_no_answer(answer):
             logger.info("资料未覆盖该问题，隐藏参考来源 tenant=%s, kb=%s", tenant_id, kb_id)
             sources = []
+        else:
+            sources = _filter_used_sources(answer, sources)
         await conversation_store.append(tenant_id, session_id, req.question, answer)
 
         return QueryResponse(
@@ -227,7 +238,10 @@ async def stream_chat(req: StreamQueryRequest, request: Request):
         # 引用校验即修正：答案流完后再校验一次，删掉无依据的引用句，有改动才下发事件替换前端气泡
         removed, fixed_answer = await verify_and_fix_answer(answer, context_str)
         # 资料未覆盖问题时不展示参考来源；sources 延后到答案结束后发，才能据此判断
-        final_sources = [] if _is_no_answer(fixed_answer) else sources
+        if _is_no_answer(fixed_answer):
+            final_sources = []
+        else:
+            final_sources = _filter_used_sources(fixed_answer, sources)
         if not final_sources:
             logger.info("资料未覆盖该问题，隐藏参考来源 tenant=%s, kb=%s", tenant_id, kb_id)
         yield f"data: {json.dumps({'type': 'sources', 'sources': [s.model_dump() for s in final_sources]}, ensure_ascii=False)}\n\n"
