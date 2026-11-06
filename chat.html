@@ -110,6 +110,72 @@
         .assistant-bubble li {
             margin: 3px 0;
         }
+        .sources {
+            display: block;
+            max-width: 75%;
+            margin-top: 10px;
+            padding: 10px 12px;
+            background: #f9fafb;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 12.5px;
+            color: #4b5563;
+        }
+        .sources-title {
+            font-weight: 600;
+            color: #374151;
+            margin-bottom: 8px;
+        }
+        .source-item {
+            padding: 6px 0;
+            border-top: 1px solid #eef0f2;
+            line-height: 1.6;
+        }
+        .source-item:first-of-type {
+            border-top: none;
+            padding-top: 0;
+        }
+        .source-idx {
+            font-weight: 600;
+            color: #2563eb;
+            margin-right: 6px;
+        }
+        .source-meta {
+            color: #6b7280;
+        }
+        .source-snippet {
+            margin-top: 3px;
+            color: #6b7280;
+            white-space: pre-wrap;
+            word-break: break-word;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .source-snippet.expanded {
+            display: block;
+            -webkit-line-clamp: unset;
+            overflow: visible;
+        }
+        .source-toggle {
+            margin-top: 2px;
+            color: #2563eb;
+            font-size: 12px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .citation-warning {
+            display: block;
+            max-width: 75%;
+            margin-top: 10px;
+            padding: 8px 12px;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            border-radius: 8px;
+            font-size: 12.5px;
+            color: #b91c1c;
+        }
         .input-area {
             padding: 16px 20px;
             display: flex;
@@ -248,7 +314,56 @@ function createAssistantBubble() {
     wrapper.appendChild(bubble);
     chatBox.appendChild(wrapper);
     scrollBottom();
-    return bubble;
+    return wrapper;
+}
+function renderSources(wrapper, sources) {
+    if (!sources || sources.length === 0) return;
+    const box = document.createElement("div");
+    box.className = "sources";
+    const title = document.createElement("div");
+    title.className = "sources-title";
+    title.textContent = "参考来源";
+    box.appendChild(title);
+    for (const s of sources) {
+        const item = document.createElement("div");
+        item.className = "source-item";
+        const idx = document.createElement("span");
+        idx.className = "source-idx";
+        idx.textContent = `[${s.index}]`;
+        const meta = document.createElement("span");
+        meta.className = "source-meta";
+        meta.textContent = `${s.doc_name || "未知文档"} · 第${s.chunk_index + 1}段`;
+        const snippet = document.createElement("div");
+        snippet.className = "source-snippet";
+        snippet.textContent = s.text;
+        item.appendChild(idx);
+        item.appendChild(meta);
+        item.appendChild(snippet);
+        box.appendChild(item);
+    }
+    wrapper.appendChild(box);
+    // 追加到 DOM 后才能测实际高度：超过 3 行才给「展开/收起」按钮
+    box.querySelectorAll(".source-snippet").forEach(snippet => {
+        if (snippet.scrollHeight > snippet.clientHeight + 1) {
+            const toggle = document.createElement("div");
+            toggle.className = "source-toggle";
+            toggle.textContent = "展开 ▾";
+            toggle.addEventListener("click", () => {
+                const expanded = snippet.classList.toggle("expanded");
+                toggle.textContent = expanded ? "收起 ▴" : "展开 ▾";
+            });
+            snippet.insertAdjacentElement("afterend", toggle);
+        }
+    });
+    scrollBottom();
+}
+function renderCitationFixed(wrapper, removed) {
+    if (!removed || removed.length === 0) return;
+    const box = document.createElement("div");
+    box.className = "citation-warning";
+    box.textContent = `已移除 ${removed.length} 处无依据引用：[${removed.map(n => `[${n}]`).join("、")}]`;
+    wrapper.appendChild(box);
+    scrollBottom();
 }
 function scrollBottom() {
     chatBox.scrollTop = chatBox.scrollHeight;
@@ -297,8 +412,12 @@ async function sendQuestion() {
     questionInput.value = "";
     setSendEnable(false);
 
-    const bubbleDom = createAssistantBubble();
+    const wrapperDom = createAssistantBubble();
+    const bubbleDom = wrapperDom.querySelector(".assistant-bubble");
     let fullText = "";
+    let sources = [];
+    let removed = [];
+    let fixedAnswer = null;
 
     try {
         if (!sessionId) {
@@ -342,13 +461,29 @@ async function sendQuestion() {
                 const payload = block.slice("data: ".length);
                 if (payload === "[DONE]") break;
 
-                fullText += JSON.parse(payload);
-                const fixed = preprocessMarkdown(fullText);
-                const html = marked.parse(fixed);
-                bubbleDom.innerHTML = DOMPurify.sanitize(html);
-                scrollBottom();
+                const parsed = JSON.parse(payload);
+                if (typeof parsed === "string") {
+                    fullText += parsed;
+                    const fixed = preprocessMarkdown(fullText);
+                    const html = marked.parse(fixed);
+                    bubbleDom.innerHTML = DOMPurify.sanitize(html);
+                    scrollBottom();
+                } else if (parsed && parsed.type === "sources") {
+                    sources = parsed.sources;
+                } else if (parsed && parsed.type === "citation_fixed") {
+                    removed = parsed.removed || [];
+                    fixedAnswer = parsed.fixed || null;
+                }
             }
         }
+        if (fixedAnswer) {
+            // 校验即修正：用去掉无依据引用句后的版本替换整个气泡
+            const fixed = preprocessMarkdown(fixedAnswer);
+            bubbleDom.innerHTML = DOMPurify.sanitize(marked.parse(fixed));
+            scrollBottom();
+        }
+        renderSources(wrapperDom, sources);
+        renderCitationFixed(wrapperDom, removed);
     } catch (err) {
         console.error(err);
         showTip("请求异常：" + err.message);

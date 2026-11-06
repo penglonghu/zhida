@@ -161,12 +161,14 @@ class Retriever:
             ))
         return hits
 
-    def search(self, query: str, limit: Optional[int] = None) -> List[str]:
+    def search_with_meta(self, query: str, limit: Optional[int] = None) -> List[RetrievalHit]:
+        """按检索模式返回带来源元数据（doc_name/chunk_index）的命中。"""
         if settings.retrieval_mode == "hybrid":
-            hits = self.search_hybrid_with_score(query, limit)
-        else:
-            hits = self.search_dense_with_score(query, limit)
-        return [h.text for h in hits]
+            return self.search_hybrid_with_score(query, limit)
+        return self.search_dense_with_score(query, limit)
+
+    def search(self, query: str, limit: Optional[int] = None) -> List[str]:
+        return [h.text for h in self.search_with_meta(query, limit)]
 
     def clear(self):
         self.client.delete_collection(self.collection_name)

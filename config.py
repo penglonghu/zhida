@@ -51,6 +51,7 @@ class Settings(BaseSettings):
 
     # ===== 检索 =====
     retrieve_top_k: int = 3
+    list_query_top_k: int = 10            # 列举型问题（有几/多少/哪些/全部）用更大的召回，避免漏经历/条目
     retrieval_mode: str = "hybrid"        # dense / hybrid
     hybrid_dense_candidates: int = 20     # 混合检索：稠密召回候选数
     hybrid_keyword_candidates: int = 20   # 混合检索：关键词召回候选数
@@ -60,8 +61,11 @@ class Settings(BaseSettings):
 
     # ===== 多轮对话 =====
     query_rewrite_enabled: bool = True     # 追问时先改写为独立查询再检索
-    conversation_max_turns: int = 10       # 每个会话最多保留的问答轮数
+    conversation_max_turns: int = 5        # 每个会话最多保留的问答轮数（省多轮 token）
     conversation_ttl_seconds: int = 3600   # 会话空闲过期时间（秒）
+
+    # ===== 引用溯源 =====
+    citation_verify_enabled: bool = False  # 引用校验：额外一次 LLM 调用校验 [n] 引用是否被资料支持（增延迟，默认关）
 
     # ===== 安全可观测 =====
     auth_enabled: bool = False             # 是否开启 API Key 认证（私有化交付时开，POC 先关）

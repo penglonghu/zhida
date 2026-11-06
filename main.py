@@ -1,17 +1,19 @@
 import asyncio
 import json
 import logging
+import re
 import tempfile
 import uuid
 from pathlib import Path
+from typing import List
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse
 from schemas import (
     QueryRequest, QueryResponse, StreamQueryRequest, UploadResponse,
-    ClearResponse, ChunkListResponse, SessionClearRequest,
+    ClearResponse, ChunkListResponse, SessionClearRequest, Source,
 )
 from core.llm import llm_client
-from core.rag_retriever import retriever
+from core.rag_retriever import retriever, RetrievalHit
 from core.embedding import embedding_client
 from core.doc_parser import parse_and_chunk
 from core.conversation import conversation_store
@@ -59,10 +61,56 @@ def build_rag_user_msg(question: str, context_str: str) -> str:
 """
 
 
-async def retrieve_context(question: str) -> str:
-    """RAG 检索（阻塞调用放线程池），返回拼好的参考资料文本。"""
-    context_list = await asyncio.to_thread(retriever.search, question)
-    return "\n".join(context_list)
+def build_context_and_sources(hits: List[RetrievalHit]) -> tuple[str, List[Source]]:
+    """把检索命中按 [1][2]... 编号拼成资料文本，同时产出来源列表。
+
+    编号让模型能在作答时用 [n] 标注引用，前端据此把答案句和来源一一对应。
+    """
+    parts = []
+    sources = []
+    for i, hit in enumerate(hits, start=1):
+        label = f"（来源：{hit.doc_name}，片段{hit.chunk_index}）" if hit.doc_name else ""
+        parts.append(f"[{i}] {label}\n{hit.text}")
+        sources.append(Source(
+            index=i,
+            doc_name=hit.doc_name,
+            chunk_index=hit.chunk_index,
+            text=hit.text,
+        ))
+    return "\n\n".join(parts), sources
+
+
+# 列举型问题关键词：问「有几段/哪些/全部」需要遍历全文档，放大召回才不漏
+_LIST_QUERY_RE = re.compile(r"几|多少|哪些|全部|所有|分别|总共|有哪些|几种|几段|几项|几个")
+
+
+def _is_list_query(question: str) -> bool:
+    return bool(_LIST_QUERY_RE.search(question))
+
+
+async def retrieve_context(question: str) -> tuple[str, List[Source]]:
+    """RAG 检索（阻塞调用放线程池），返回 (编号资料文本, 来源列表)。"""
+    limit = settings.list_query_top_k if _is_list_query(question) else settings.retrieve_top_k
+    hits = await asyncio.to_thread(retriever.search_with_meta, question, limit)
+    return build_context_and_sources(hits)
+
+
+def _has_citations(answer: str) -> bool:
+    return re.search(r"\[\d+\]", answer) is not None
+
+
+async def verify_and_fix_answer(answer: str, context_str: str) -> tuple[List[int], str]:
+    """引用校验即修正：返回 (被移除的无依据 [n] 编号列表, 修正后的答案)。
+
+    开关关闭/无资料/无引用时跳过（省一次 LLM 调用）；出错时原样返回（fail-open）。
+    """
+    if not settings.citation_verify_enabled or not context_str or not _has_citations(answer):
+        return [], answer
+    try:
+        return await llm_client.verify_citations(answer, context_str)
+    except Exception:
+        logger.warning("引用校验失败，fail-open 返回原答案", exc_info=True)
+        return [], answer
 
 
 @app.post("/query", response_model=QueryResponse, summary="同步问答接口（RAG增强，支持多轮）")
@@ -78,11 +126,12 @@ async def chat(req: QueryRequest):
             search_query = await llm_client.rewrite_query(history, req.question)
             logger.info(f"查询改写：{req.question!r} -> {search_query!r}")
 
-        context_str = await retrieve_context(search_query)
+        context_str, sources = await retrieve_context(search_query)
         user_msg = build_rag_user_msg(req.question, context_str)
         messages = history + [{"role": "user", "content": user_msg}]
 
         answer = await llm_client.chat(messages, temperature=req.temperature)
+        removed_citations, answer = await verify_and_fix_answer(answer, context_str)
         await conversation_store.append(session_id, req.question, answer)
 
         return QueryResponse(
@@ -91,6 +140,8 @@ async def chat(req: QueryRequest):
             session_id=session_id,
             success=True,
             msg="ok",
+            sources=sources,
+            removed_citations=removed_citations,
         )
     except Exception as e:
         logger.exception("同步请求异常")
@@ -108,17 +159,24 @@ async def stream_chat(req: StreamQueryRequest):
         search_query = await llm_client.rewrite_query(history, req.question)
         logger.info(f"查询改写：{req.question!r} -> {search_query!r}")
 
-    context_str = await retrieve_context(search_query)
+    context_str, sources = await retrieve_context(search_query)
     user_msg = build_rag_user_msg(req.question, context_str)
     messages = history + [{"role": "user", "content": user_msg}]
 
     async def gen():
+        # 先发来源元数据（结构化事件），前端据此渲染引用列表
+        yield f"data: {json.dumps({'type': 'sources', 'sources': [s.model_dump() for s in sources]}, ensure_ascii=False)}\n\n"
         answer_parts = []
         async for chunk in llm_client.stream_chat(messages, temperature=req.temperature):
             answer_parts.append(chunk)
             # SSE 的 data 字段必须单行，多行内容用 JSON 编码保证换行安全
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-        await conversation_store.append(session_id, req.question, "".join(answer_parts))
+        answer = "".join(answer_parts)
+        # 引用校验即修正：答案流完后再校验一次，删掉无依据的引用句，有改动才下发事件替换前端气泡
+        removed, fixed_answer = await verify_and_fix_answer(answer, context_str)
+        await conversation_store.append(session_id, req.question, fixed_answer)
+        if removed:
+            yield f"data: {json.dumps({'type': 'citation_fixed', 'removed': removed, 'fixed': fixed_answer}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(gen(), media_type="text/event-stream")

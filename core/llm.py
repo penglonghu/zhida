@@ -1,7 +1,8 @@
 import asyncio
 import json
+import re
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List
+from typing import AsyncGenerator, Dict, List, Tuple
 
 import httpx
 
@@ -25,6 +26,7 @@ class LLMClient:
 
         self._system_prompt = None
         self._rewrite_prompt = None
+        self._verify_prompt = None
 
     def _load_prompt(self, name: str) -> str:
         return (Path(settings.prompt_dir) / name).read_text(encoding="utf-8")
@@ -41,6 +43,12 @@ class LLMClient:
         if self._rewrite_prompt is None or settings.prompt_reload_on_each_call:
             self._rewrite_prompt = self._load_prompt("rewrite.md")
         return self._rewrite_prompt
+
+    @property
+    def verify_prompt(self) -> str:
+        if self._verify_prompt is None or settings.prompt_reload_on_each_call:
+            self._verify_prompt = self._load_prompt("verify.md")
+        return self._verify_prompt
 
     def _backoff(self, attempt: int) -> float:
         # 指数退避：基数 * 2^attempt，即 2s、4s、8s…
@@ -117,6 +125,29 @@ class LLMClient:
         full.extend(history)
         full.append({"role": "user", "content": f"当前追问：{question}"})
         return (await self._chat_raw(full, temperature=0.0)).strip()
+
+    async def verify_citations(self, answer: str, chunks_text: str) -> Tuple[List[int], str]:
+        """校验即修正：返回 (被移除的无依据 [n] 编号列表, 修正后的答案)。
+
+        解析失败或模型输出异常时返回 ([], answer) 原样退回（fail-open）。
+        """
+        full = [{"role": "system", "content": self.verify_prompt}]
+        full.append({"role": "user", "content": f"【回答】\n{answer}\n\n【资料】\n{chunks_text}"})
+        raw = (await self._chat_raw(full, temperature=0.0)).strip()
+        # 稳健解析：去掉可能的 ```json 围栏，截取首个 {...} 再 json 解析
+        raw = re.sub(r"^```(?:json)?\s*|```$", "", raw, flags=re.MULTILINE).strip()
+        m = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        if not m:
+            return [], answer
+        try:
+            obj = json.loads(m.group(0))
+            removed = [int(x) for x in obj.get("removed", [])]
+            fixed = obj.get("fixed", answer)
+            if not isinstance(fixed, str) or not fixed.strip():
+                fixed = answer
+            return removed, fixed
+        except (ValueError, TypeError):
+            return [], answer
 
 
 llm_client = LLMClient()
