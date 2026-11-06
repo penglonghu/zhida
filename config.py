@@ -72,9 +72,16 @@ class Settings(BaseSettings):
     default_kb_id: str = "default"         # 未指定时的知识库
     tenant_api_keys: str = ""              # "tenantA=keyA,tenantB=keyB"；SERVICE_API_KEY 映射到 default 租户
 
+    # ===== 浏览器登录（Cookie 会话）=====
+    auth_users: str = ""                   # "alice:<密码哈希>:tenantA,bob:<哈希>:tenantB"
+    session_secret: str = ""               # 登录 Cookie 的 HMAC 签名密钥（必填，随机长串）
+    session_ttl_seconds: int = 28800       # 登录有效期 8 小时
+    cookie_secure: bool = False            # HTTPS 部署置 true
+    cookie_name: str = "zhida_session"
+
     # ===== 安全可观测 =====
-    auth_enabled: bool = False             # 是否开启 API Key 认证（私有化交付时开，POC 先关）
-    service_api_key: str = ""              # 认证密钥（auth_enabled=True 时必填）
+    auth_enabled: bool = False             # 是否开启认证（私有化交付时开，POC 先关）
+    service_api_key: str = ""              # 程序调用密钥（映射 default 租户）
     rate_limit_enabled: bool = True        # 是否开启限流
     rate_limit_max_requests: int = 60      # 窗口内最大请求数
     rate_limit_window_seconds: int = 60    # 限流窗口（秒）

@@ -46,3 +46,19 @@ class ChunkListResponse(BaseModel):
 
 class KnowledgeBaseListResponse(BaseModel):
     kbs: List[str]
+
+# ===== 登录 =====
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=1, max_length=256)
+
+class LoginResponse(BaseModel):
+    username: str
+    tenant: str
+
+class MeResponse(BaseModel):
+    auth_required: bool
+    authenticated: bool
+    username: Optional[str] = None
+    tenant: str
+    method: Optional[str] = None

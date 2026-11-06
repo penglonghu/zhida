@@ -6,12 +6,14 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query, Request, Response
 from fastapi.responses import StreamingResponse, JSONResponse
 from schemas import (
     QueryRequest, QueryResponse, StreamQueryRequest, UploadResponse,
     ClearResponse, ChunkListResponse, KnowledgeBaseListResponse, SessionClearRequest, Source,
+    LoginRequest, LoginResponse, MeResponse,
 )
+from core.auth import authenticate, create_session_token, parse_users
 from core.llm import llm_client
 from core.rag_retriever import retriever, RetrievalHit
 from core.embedding import embedding_client
@@ -47,6 +49,50 @@ def _scope_from(request: Request, kb_id: Optional[str] = None) -> tuple[str, str
     """解析本次请求的租户/知识库。租户来自 AuthMiddleware，知识库来自请求。"""
     tenant_id = getattr(request.state, "tenant_id", settings.default_tenant_id)
     return tenant_id, kb_id or settings.default_kb_id
+
+
+@app.post("/login", response_model=LoginResponse, summary="浏览器登录（下发 httpOnly Cookie）")
+def login(req: LoginRequest, response: Response):
+    if not settings.auth_enabled:
+        return LoginResponse(username="anonymous", tenant=settings.default_tenant_id)
+    if not settings.session_secret:
+        raise HTTPException(status_code=500, detail="服务未配置 SESSION_SECRET")
+    tenant = authenticate(parse_users(settings.auth_users), req.username, req.password)
+    if tenant is None:
+        logger.warning("登录失败 user=%s", req.username)
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    token = create_session_token(req.username, settings.session_secret, settings.session_ttl_seconds)
+    response.set_cookie(
+        key=settings.cookie_name,
+        value=token,
+        max_age=settings.session_ttl_seconds,
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
+        path="/",
+    )
+    logger.info("登录成功 user=%s tenant=%s", req.username, tenant)
+    return LoginResponse(username=req.username, tenant=tenant)
+
+
+@app.post("/logout", summary="退出登录")
+def logout(response: Response):
+    response.delete_cookie(settings.cookie_name, path="/")
+    return {"ok": True}
+
+
+@app.get("/me", response_model=MeResponse, summary="当前登录状态")
+def me(request: Request):
+    method = getattr(request.state, "auth_method", None)
+    username = getattr(request.state, "username", None)
+    tenant = getattr(request.state, "tenant_id", settings.default_tenant_id)
+    return MeResponse(
+        auth_required=settings.auth_enabled,
+        authenticated=(not settings.auth_enabled) or method in ("cookie", "apikey"),
+        username=username,
+        tenant=tenant,
+        method=method,
+    )
 
 
 def build_rag_user_msg(question: str, context_str: str) -> str:

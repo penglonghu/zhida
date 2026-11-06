@@ -30,6 +30,21 @@
             background: #2563eb;
             color: white;
             font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .user-info {
+            margin-left: auto;
+            font-weight: 400;
+            font-size: 13px;
+            opacity: .9;
+        }
+        .logout-btn {
+            height: 30px;
+            padding: 0 12px;
+            font-size: 13px;
+            background: rgba(255, 255, 255, .16);
         }
         .upload-area {
             padding: 14px 20px;
@@ -74,11 +89,50 @@
             font-size: 12px;
             color: #6b7280;
         }
-        .auth-area {
-            background: #fff;
+        .login-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(15, 23, 42, .55);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
         }
-        .auth-area input {
-            width: 240px;
+        .login-overlay.show {
+            display: flex;
+        }
+        .login-card {
+            width: 320px;
+            padding: 28px 26px;
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, .2);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .login-card h2 {
+            margin: 0 0 6px;
+            font-size: 18px;
+            color: #1f2937;
+            text-align: center;
+        }
+        .login-card input {
+            height: 40px;
+            padding: 0 12px;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        .login-card button {
+            height: 40px;
+            font-size: 15px;
+        }
+        .login-error {
+            min-height: 18px;
+            color: #ef4444;
+            font-size: 13px;
+            text-align: center;
         }
         .chat-box {
             height: 440px;
@@ -257,15 +311,23 @@
     </style>
 </head>
 <body>
-<div class="container">
-    <div class="header">知答 ZhiDa · RAG 知识库问答 (DeepSeek + 本地BGE)</div>
-    <div class="tip" id="tipBox"></div>
+<div class="login-overlay" id="loginOverlay">
+    <form class="login-card" id="loginForm">
+        <h2>登录知答 ZhiDa</h2>
+        <input id="loginUser" placeholder="用户名" autocomplete="username" required>
+        <input id="loginPass" type="password" placeholder="密码" autocomplete="current-password" required>
+        <button type="submit" id="loginBtn">登录</button>
+        <div class="login-error" id="loginError"></div>
+    </form>
+</div>
 
-    <div class="kb-area auth-area">
-        <label for="apiKeyInput">API Key</label>
-        <input type="password" id="apiKeyInput" placeholder="认证关闭时可留空" autocomplete="new-password">
-        <span class="kb-hint" id="apiKeyHint">仅保存在本标签页，关闭即清除</span>
+<div class="container">
+    <div class="header">
+        <span>知答 ZhiDa · RAG 知识库问答 (DeepSeek + 本地BGE)</span>
+        <span class="user-info" id="userInfo"></span>
+        <button type="button" class="logout-btn" id="logoutBtn" style="display:none">退出</button>
     </div>
+    <div class="tip" id="tipBox"></div>
 
     <div class="kb-area">
         <label for="kbInput">知识库</label>
@@ -295,8 +357,10 @@ const API_BASE = location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
 const API_STREAM_URL = API_BASE + "/stream-query";
 const API_UPLOAD_URL = API_BASE + "/upload-doc";
 const API_KBS_URL = API_BASE + "/knowledge-bases";
+const API_ME_URL = API_BASE + "/me";
+const API_LOGIN_URL = API_BASE + "/login";
+const API_LOGOUT_URL = API_BASE + "/logout";
 const KB_STORAGE_KEY = "zhida_kb";
-const API_KEY_STORAGE_KEY = "zhida_api_key";
 
 const chatBox = document.getElementById("chatBox");
 const questionInput = document.getElementById("questionInput");
@@ -309,45 +373,110 @@ const kbInput = document.getElementById("kbInput");
 const kbList = document.getElementById("kbList");
 const kbRefreshBtn = document.getElementById("kbRefreshBtn");
 const kbHint = document.getElementById("kbHint");
-const apiKeyInput = document.getElementById("apiKeyInput");
-const apiKeyHint = document.getElementById("apiKeyHint");
+const loginOverlay = document.getElementById("loginOverlay");
+const loginForm = document.getElementById("loginForm");
+const loginUser = document.getElementById("loginUser");
+const loginPass = document.getElementById("loginPass");
+const loginBtn = document.getElementById("loginBtn");
+const loginError = document.getElementById("loginError");
+const userInfo = document.getElementById("userInfo");
+const logoutBtn = document.getElementById("logoutBtn");
 
 let isStreaming = false;
 let isUploading = false;
 let sessionId = null;   // 多轮会话ID：首次发送时生成并复用，让服务端记住上下文
+let authRequired = false;
 
 function currentKb() {
     return (kbInput.value || "").trim() || "default";
 }
 
-function currentApiKey() {
-    return (apiKeyInput.value || "").trim();
+function showLogin(message) {
+    loginError.textContent = message || "";
+    loginOverlay.classList.add("show");
 }
 
-function authHeaders(extra) {
-    const headers = Object.assign({}, extra || {});
-    const key = currentApiKey();
-    if (key) headers["X-API-Key"] = key;
-    return headers;
+function hideLogin() {
+    loginOverlay.classList.remove("show");
 }
 
-function saveApiKey() {
-    const key = currentApiKey();
-    if (key) sessionStorage.setItem(API_KEY_STORAGE_KEY, key);
-    else sessionStorage.removeItem(API_KEY_STORAGE_KEY);
-    // 换 Key 可能换租户，旧会话与知识库列表都不再可信
+async function checkAuth() {
+    try {
+        const res = await fetch(API_ME_URL, { credentials: "same-origin" });
+        if (!res.ok) {
+            showLogin("无法获取登录状态");
+            return;
+        }
+        const me = await res.json();
+        authRequired = !!me.auth_required;
+        if (authRequired && !me.authenticated) {
+            showLogin("");
+            return;
+        }
+        hideLogin();
+        if (authRequired) {
+            userInfo.textContent = `${me.username || ""} · ${me.tenant}`;
+            logoutBtn.style.display = "inline-block";
+        } else {
+            userInfo.textContent = "";
+            logoutBtn.style.display = "none";
+        }
+        await loadKbs();
+    } catch (e) {
+        showLogin("服务不可用：" + e.message);
+    }
+}
+
+async function doLogin(e) {
+    e.preventDefault();
+    const username = loginUser.value.trim();
+    const password = loginPass.value;
+    if (!username || !password) {
+        loginError.textContent = "请输入用户名和密码";
+        return;
+    }
+    loginBtn.disabled = true;
+    loginError.textContent = "";
+    try {
+        const res = await fetch(API_LOGIN_URL, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username, password })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            loginError.textContent = data.detail || "登录失败";
+            return;
+        }
+        loginPass.value = "";
+        await checkAuth();
+    } catch (err) {
+        loginError.textContent = "登录异常：" + err.message;
+    } finally {
+        loginBtn.disabled = false;
+    }
+}
+
+async function doLogout() {
+    try {
+        await fetch(API_LOGOUT_URL, { method: "POST", credentials: "same-origin" });
+    } catch (e) {
+        console.warn("退出请求失败", e);
+    }
     chatBox.innerHTML = "";
     sessionId = null;
+    userInfo.textContent = "";
+    logoutBtn.style.display = "none";
     hideTip();
-    apiKeyHint.textContent = key ? "已保存在本标签页" : "未设置（认证关闭时可用）";
-    loadKbs();
+    showLogin("已退出登录");
 }
 
 async function loadKbs() {
     try {
-        const res = await fetch(API_KBS_URL, { headers: authHeaders() });
+        const res = await fetch(API_KBS_URL, { credentials: "same-origin" });
         if (res.status === 401) {
-            kbHint.textContent = "API Key 无效或未填写";
+            showLogin("登录已失效，请重新登录");
             return;
         }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -507,11 +636,11 @@ async function uploadFile(){
     try{
         const res = await fetch(API_UPLOAD_URL, {
             method:"POST",
-            headers: authHeaders(),
+            credentials: "same-origin",
             body: formData
         });
         if (res.status === 401) {
-            showTip("API Key 无效或未填写");
+            showLogin("登录已失效，请重新登录");
             return;
         }
         const data = await res.json();
@@ -551,10 +680,11 @@ async function sendQuestion() {
         }
         const resp = await fetch(API_STREAM_URL, {
             method: "POST",
-            headers: authHeaders({
+            credentials: "same-origin",
+            headers: {
                 "Content-Type": "application/json",
                 "accept": "*/*"
-            }),
+            },
             body: JSON.stringify({
                 question: q,
                 session_id: sessionId,
@@ -564,7 +694,8 @@ async function sendQuestion() {
         });
 
         if (resp.status === 401) {
-            throw new Error("API Key 无效或未填写（401）");
+            showLogin("登录已失效，请重新登录");
+            throw new Error("登录已失效（401）");
         }
         if (!resp.ok) {
             throw new Error(`HTTP ${resp.status}`);
@@ -626,15 +757,8 @@ async function sendQuestion() {
 sendBtn.addEventListener("click", sendQuestion);
 uploadBtn.addEventListener("click", uploadFile);
 kbInput.value = localStorage.getItem(KB_STORAGE_KEY) || "default";
-apiKeyInput.value = sessionStorage.getItem(API_KEY_STORAGE_KEY) || "";
-if (apiKeyInput.value) apiKeyHint.textContent = "已保存在本标签页";
-apiKeyInput.addEventListener("change", saveApiKey);
-apiKeyInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-        e.preventDefault();
-        apiKeyInput.blur();   // 触发 change，保存并刷新
-    }
-});
+loginForm.addEventListener("submit", doLogin);
+logoutBtn.addEventListener("click", doLogout);
 kbInput.addEventListener("change", switchKb);
 kbInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -643,7 +767,7 @@ kbInput.addEventListener("keydown", (e) => {
     }
 });
 kbRefreshBtn.addEventListener("click", loadKbs);
-loadKbs();
+checkAuth();
 
 questionInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {

@@ -15,6 +15,7 @@ import uuid
 from collections import defaultdict, deque
 
 from config import settings
+from core.auth import parse_cookies, parse_users, verify_session_token
 from core.tracing import set_trace_id
 
 logger = logging.getLogger(__name__)
@@ -93,23 +94,54 @@ class AuditMiddleware:
             )
 
 
+_PUBLIC_PATHS = ("/health", "/ready", "/login", "/logout", "/me", "/docs", "/openapi.json", "/redoc")
+
+
 class AuthMiddleware:
-    """API Key 认证 + 租户解析：Authorization: Bearer <key> 或 X-API-Key。
+    """认证 + 租户解析，两种凭证：
+
+    - 浏览器：登录 Cookie（HMAC 签名 token，租户由账号配置决定）
+    - 程序调用：Authorization: Bearer <key> 或 X-API-Key
 
     auth_enabled=False（POC/开发）时放行，并允许 X-Tenant-Id 指定租户，
-    便于本地验证隔离；生产必须开启 auth，租户只由 API Key 决定，
-    请求头里的 X-Tenant-Id 会被忽略。
+    便于本地验证隔离；生产必须开启 auth，该头会被忽略。
     """
 
     def __init__(self, app):
         self.app = app
         self._key_tenants = _api_key_tenants()
+        self._users = parse_users(settings.auth_users)
+        if settings.auth_enabled and self._users and not settings.session_secret:
+            logger.error("配置了 AUTH_USERS 但缺少 SESSION_SECRET，浏览器登录将不可用")
 
     def _resolve_tenant(self, supplied: str):
         for key, tenant in self._key_tenants.items():
             if hmac.compare_digest(supplied, key):
                 return tenant
         return None
+
+    def _apply_auth(self, headers: dict, state: dict) -> bool:
+        """依次尝试 Cookie 与 API Key，成功则写 state。"""
+        if settings.session_secret:
+            token = parse_cookies(headers.get("cookie", "")).get(settings.cookie_name)
+            if token:
+                payload = verify_session_token(token, settings.session_secret)
+                record = self._users.get(payload["u"]) if payload else None
+                if record:
+                    state["tenant_id"] = record[1]
+                    state["username"] = payload["u"]
+                    state["auth_method"] = "cookie"
+                    return True
+
+        auth = headers.get("authorization", "")
+        supplied = auth[7:] if auth.startswith("Bearer ") else headers.get("x-api-key", "")
+        tenant = self._resolve_tenant(supplied) if supplied else None
+        if tenant is not None:
+            state["tenant_id"] = tenant
+            state["username"] = "-"
+            state["auth_method"] = "apikey"
+            return True
+        return False
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -120,28 +152,26 @@ class AuthMiddleware:
         state = scope.setdefault("state", {})
         path = scope.get("path", "")
 
-        # 仅开发态允许用请求头指定租户；生产开启认证后必须由 Key 决定
+        # 仅开发态允许用请求头指定租户；生产开启认证后必须由凭证决定
         if not settings.auth_enabled:
             state["tenant_id"] = headers.get("x-tenant-id") or settings.default_tenant_id
+            state["username"] = "anonymous"
+            state["auth_method"] = "dev"
             await self.app(scope, receive, send)
             return
 
-        if path in ("/health", "/ready", "/docs", "/openapi.json", "/redoc") or path.startswith("/docs/"):
-            state["tenant_id"] = settings.default_tenant_id
+        if path in _PUBLIC_PATHS or path.startswith("/docs/"):
+            self._apply_auth(headers, state)   # /me 需要识别已登录用户，但不强制
             await self.app(scope, receive, send)
             return
 
-        if not self._key_tenants:
-            # fail-closed：开了认证却没配 Key，不能退化成「放行 + 信任客户端租户头」
-            logger.error("AUTH_ENABLED=true 但未配置任何 API Key，拒绝请求")
+        if not self._users and not self._key_tenants:
+            # fail-closed：开了认证却没有任何凭证来源
+            logger.error("AUTH_ENABLED=true 但未配置 AUTH_USERS 或 API Key，拒绝请求")
             await self._reject(send, 500, b'{"detail":"auth misconfigured"}')
             return
 
-        auth = headers.get("authorization", "")
-        supplied = auth[7:] if auth.startswith("Bearer ") else headers.get("x-api-key", "")
-        tenant = self._resolve_tenant(supplied)
-        if tenant is not None:
-            state["tenant_id"] = tenant
+        if self._apply_auth(headers, state):
             await self.app(scope, receive, send)
             return
 
@@ -237,8 +267,8 @@ class RateLimitMiddleware:
 
         client = scope.get("client")
         client_ip = client[0] if client else "-"
-        if settings.auth_enabled:
-            tenant_id = scope.get("state", {}).get("tenant_id", settings.default_tenant_id)
+        tenant_id = scope.get("state", {}).get("tenant_id")
+        if settings.auth_enabled and tenant_id:
             identity = f"tenant:{tenant_id}"
         else:
             identity = f"ip:{client_ip}"
