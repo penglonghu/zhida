@@ -5,8 +5,10 @@ BaseHTTPMiddleware 会缓冲响应 body，破坏 /stream-query 的 SSE 流式输
 纯 ASGI 只包装 send、不碰 body，对流式安全。
 
 注册顺序（Starlette add_middleware 后加的在外层，先执行）：
-RateLimit(最内) -> Auth -> Audit -> Trace(最外) -> CORS
+RateLimit(最内) -> Audit -> Auth -> Trace(最外) -> CORS
+Auth 必须先于 Audit/RateLimit，后者才能拿到租户身份。
 """
+import hmac
 import logging
 import time
 import uuid
@@ -20,6 +22,21 @@ logger = logging.getLogger(__name__)
 
 def _header_map(scope) -> dict:
     return {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+
+
+def _api_key_tenants() -> dict:
+    """API Key -> 租户映射。SERVICE_API_KEY 兼容映射到默认租户。"""
+    mapping = {}
+    if settings.service_api_key:
+        mapping[settings.service_api_key] = settings.default_tenant_id
+    for pair in settings.tenant_api_keys.split(","):
+        pair = pair.strip()
+        if not pair or "=" not in pair:
+            continue
+        tenant, key = (s.strip() for s in pair.split("=", 1))
+        if tenant and key:
+            mapping[key] = tenant
+    return mapping
 
 
 class TraceMiddleware:
@@ -69,39 +86,67 @@ class AuditMiddleware:
             await self.app(scope, receive, send_wrapper)
         finally:
             cost_ms = (time.perf_counter() - start) * 1000
+            tenant_id = scope.get("state", {}).get("tenant_id", "-")
             logger.info(
-                "audit method=%s path=%s status=%s ip=%s cost_ms=%.1f",
-                method, path, status_holder["code"], client_ip, cost_ms,
+                "audit method=%s path=%s status=%s tenant=%s ip=%s cost_ms=%.1f",
+                method, path, status_holder["code"], tenant_id, client_ip, cost_ms,
             )
 
 
 class AuthMiddleware:
-    """API Key 认证：Authorization: Bearer <key> 或 X-API-Key。auth_enabled=False 时放行。"""
+    """API Key 认证 + 租户解析：Authorization: Bearer <key> 或 X-API-Key。
+
+    auth_enabled=False（POC/开发）时放行，并允许 X-Tenant-Id 指定租户，
+    便于本地验证隔离；生产必须开启 auth，租户只由 API Key 决定，
+    请求头里的 X-Tenant-Id 会被忽略。
+    """
 
     def __init__(self, app):
         self.app = app
+        self._key_tenants = _api_key_tenants()
+
+    def _resolve_tenant(self, supplied: str):
+        for key, tenant in self._key_tenants.items():
+            if hmac.compare_digest(supplied, key):
+                return tenant
+        return None
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        if not settings.auth_enabled or not settings.service_api_key:
-            await self.app(scope, receive, send)
-            return
-
-        path = scope.get("path", "")
-        if path in ("/health", "/docs", "/openapi.json", "/redoc") or path.startswith("/docs/"):
-            await self.app(scope, receive, send)
-            return
 
         headers = _header_map(scope)
-        auth = headers.get("authorization", "")
-        supplied = auth[7:] if auth.startswith("Bearer ") else headers.get("x-api-key", "")
+        state = scope.setdefault("state", {})
+        path = scope.get("path", "")
 
-        if supplied == settings.service_api_key:
+        # 仅开发态允许用请求头指定租户；生产开启认证后必须由 Key 决定
+        if not settings.auth_enabled:
+            state["tenant_id"] = headers.get("x-tenant-id") or settings.default_tenant_id
             await self.app(scope, receive, send)
             return
 
+        if path in ("/health", "/ready", "/docs", "/openapi.json", "/redoc") or path.startswith("/docs/"):
+            state["tenant_id"] = settings.default_tenant_id
+            await self.app(scope, receive, send)
+            return
+
+        if not self._key_tenants:
+            # fail-closed：开了认证却没配 Key，不能退化成「放行 + 信任客户端租户头」
+            logger.error("AUTH_ENABLED=true 但未配置任何 API Key，拒绝请求")
+            await self._reject(send, 500, b'{"detail":"auth misconfigured"}')
+            return
+
+        auth = headers.get("authorization", "")
+        supplied = auth[7:] if auth.startswith("Bearer ") else headers.get("x-api-key", "")
+        tenant = self._resolve_tenant(supplied)
+        if tenant is not None:
+            state["tenant_id"] = tenant
+            await self.app(scope, receive, send)
+            return
+
+        client = scope.get("client")
+        logger.warning("认证失败 path=%s ip=%s", path, client[0] if client else "-")
         await self._reject(send, 401, b'{"detail":"unauthorized"}')
 
     async def _reject(self, send, status: int, body: bytes):
@@ -117,7 +162,7 @@ class AuthMiddleware:
 
 
 class MemoryRateLimiter:
-    """内存滑动窗口限流（按 IP）：记录每次请求时间戳，精确到毫秒边界。
+    """内存滑动窗口限流（按限流身份）：记录每次请求时间戳，精确到毫秒边界。
 
     仅单实例有效——多 worker/实例各记各的，限流会失效。
     """
@@ -127,9 +172,9 @@ class MemoryRateLimiter:
         self.window_seconds = window_seconds if window_seconds is not None else settings.rate_limit_window_seconds
         self._hits = defaultdict(deque)
 
-    async def allow(self, client_ip: str) -> bool:
+    async def allow(self, identity: str) -> bool:
         now = time.time()
-        q = self._hits[client_ip]
+        q = self._hits[identity]
         while q and now - q[0] > self.window_seconds:
             q.popleft()
         if len(q) >= self.max_requests:
@@ -139,7 +184,7 @@ class MemoryRateLimiter:
 
 
 class RedisRateLimiter:
-    """Redis 固定窗口限流（按 IP）：INCR 计数，首次计数时设置窗口过期。
+    """Redis 固定窗口限流（按限流身份）：INCR 计数，首次计数时设置窗口过期。
 
     多实例共享同一个计数器，天然全局生效。固定窗口在窗口边界处可能有
     少量突刺（上一窗口末尾 + 下一窗口开头的请求都算进新窗口），但对
@@ -164,11 +209,11 @@ class RedisRateLimiter:
         self._redis = get_redis()
         self._incr_script = self._redis.register_script(self._INCR_LUA)
 
-    def _key(self, client_ip: str) -> str:
-        return f"{settings.redis_prefix}:ratelimit:{client_ip}"
+    def _key(self, identity: str) -> str:
+        return f"{settings.redis_prefix}:ratelimit:{identity}"
 
-    async def allow(self, client_ip: str) -> bool:
-        current = await self._incr_script(keys=[self._key(client_ip)], args=[self.window_seconds])
+    async def allow(self, identity: str) -> bool:
+        current = await self._incr_script(keys=[self._key(identity)], args=[self.window_seconds])
         return int(current) <= self.max_requests
 
 
@@ -186,17 +231,22 @@ class RateLimitMiddleware:
         if not settings.rate_limit_enabled:
             await self.app(scope, receive, send)
             return
-        if scope.get("path", "") == "/health":
+        if scope.get("path", "") in ("/health", "/ready"):
             await self.app(scope, receive, send)
             return
 
         client = scope.get("client")
         client_ip = client[0] if client else "-"
+        if settings.auth_enabled:
+            tenant_id = scope.get("state", {}).get("tenant_id", settings.default_tenant_id)
+            identity = f"tenant:{tenant_id}"
+        else:
+            identity = f"ip:{client_ip}"
         try:
-            allowed = await self._limiter.allow(client_ip)
+            allowed = await self._limiter.allow(identity)
         except Exception:
             # fail-open：限流是防护性功能，Redis 挂了宁可放行，也不能把整个服务搞挂。
-            logger.warning("限流后端不可用，fail-open 放行（ip=%s）", client_ip, exc_info=True)
+            logger.warning("限流后端不可用，fail-open 放行（identity=%s）", identity, exc_info=True)
             allowed = True
         if not allowed:
             await self._reject(send, 429, b'{"detail":"too many requests"}')

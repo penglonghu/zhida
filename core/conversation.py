@@ -1,4 +1,4 @@
-"""多轮会话存储：按 session_id 记住问答历史，供 LLM 理解上下文。
+"""多轮会话存储：按 (tenant_id, session_id) 记住问答历史，供 LLM 理解上下文。
 
 两种后端，通过 config.redis_enabled 切换：
 - MemoryConversationStore：进程内存 dict，单实例够用，重启即丢、多 worker 不共享。
@@ -36,13 +36,18 @@ class MemoryConversationStore:
     def _expire(self) -> None:
         """惰性清理空闲超时的会话，避免内存无限增长。"""
         now = time.time()
-        expired = [sid for sid, c in self._store.items() if now - c.updated_at > self.ttl_seconds]
-        for sid in expired:
-            del self._store[sid]
+        expired = [k for k, c in self._store.items() if now - c.updated_at > self.ttl_seconds]
+        for k in expired:
+            del self._store[k]
 
-    async def get_history(self, session_id: str) -> List[dict]:
+    @staticmethod
+    def _key(tenant_id: str, session_id: str) -> str:
+        # 会话按租户隔离：即使猜到别人的 session_id，也读不到其历史
+        return f"{tenant_id}:{session_id}"
+
+    async def get_history(self, tenant_id: str, session_id: str) -> List[dict]:
         """返回 OpenAI messages 格式的会话历史（不含 system）。"""
-        c = self._store.get(session_id)
+        c = self._store.get(self._key(tenant_id, session_id))
         if c is None:
             return []
         msgs: List[dict] = []
@@ -51,19 +56,20 @@ class MemoryConversationStore:
             msgs.append({"role": "assistant", "content": turn["answer"]})
         return msgs
 
-    async def append(self, session_id: str, question: str, answer: str) -> None:
-        c = self._store.get(session_id)
+    async def append(self, tenant_id: str, session_id: str, question: str, answer: str) -> None:
+        key = self._key(tenant_id, session_id)
+        c = self._store.get(key)
         if c is None:
             c = Conversation(session_id=session_id)
-            self._store[session_id] = c
+            self._store[key] = c
         c.turns.append({"question": question, "answer": answer})
         if len(c.turns) > self.max_turns:
             c.turns = c.turns[-self.max_turns:]   # 只保留最近 N 轮，控制 token 预算
         c.updated_at = time.time()
         self._expire()
 
-    async def clear(self, session_id: str) -> bool:
-        return self._store.pop(session_id, None) is not None
+    async def clear(self, tenant_id: str, session_id: str) -> bool:
+        return self._store.pop(self._key(tenant_id, session_id), None) is not None
 
 
 class RedisConversationStore:
@@ -104,11 +110,11 @@ class RedisConversationStore:
         self._redis = get_redis()
         self._append_script = self._redis.register_script(self._APPEND_LUA)
 
-    def _key(self, session_id: str) -> str:
-        return f"{settings.redis_prefix}:session:{session_id}"
+    def _key(self, tenant_id: str, session_id: str) -> str:
+        return f"{settings.redis_prefix}:{tenant_id}:session:{session_id}"
 
-    async def get_history(self, session_id: str) -> List[dict]:
-        raw = await self._redis.get(self._key(session_id))
+    async def get_history(self, tenant_id: str, session_id: str) -> List[dict]:
+        raw = await self._redis.get(self._key(tenant_id, session_id))
         if not raw:
             return []
         turns = json.loads(raw)
@@ -118,15 +124,15 @@ class RedisConversationStore:
             msgs.append({"role": "assistant", "content": turn["answer"]})
         return msgs
 
-    async def append(self, session_id: str, question: str, answer: str) -> None:
+    async def append(self, tenant_id: str, session_id: str, question: str, answer: str) -> None:
         turn = json.dumps({"question": question, "answer": answer}, ensure_ascii=False)
         await self._append_script(
-            keys=[self._key(session_id)],
+            keys=[self._key(tenant_id, session_id)],
             args=[turn, self.max_turns, self.ttl_seconds],
         )
 
-    async def clear(self, session_id: str) -> bool:
-        return bool(await self._redis.delete(self._key(session_id)))
+    async def clear(self, tenant_id: str, session_id: str) -> bool:
+        return bool(await self._redis.delete(self._key(tenant_id, session_id)))
 
 
 conversation_store = (

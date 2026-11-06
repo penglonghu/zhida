@@ -5,8 +5,8 @@ import re
 import tempfile
 import uuid
 from pathlib import Path
-from typing import List
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from schemas import (
     QueryRequest, QueryResponse, StreamQueryRequest, UploadResponse,
@@ -28,10 +28,11 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="知答 ZhiDa", version="0.1.0")
 
 # 中间件注册顺序（Starlette 后 add 的在外层、先执行）：
-# RateLimit(最内) -> Auth -> Audit -> Trace -> CORS(最外，处理预检)
+# RateLimit(最内) -> Audit -> Auth -> Trace -> CORS(最外，处理预检)
+# Auth 必须先于 Audit/RateLimit，后者才能拿到租户身份。
 app.add_middleware(RateLimitMiddleware)
-app.add_middleware(AuthMiddleware)
 app.add_middleware(AuditMiddleware)
+app.add_middleware(AuthMiddleware)
 app.add_middleware(TraceMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -40,6 +41,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _scope_from(request: Request, kb_id: Optional[str] = None) -> tuple[str, str]:
+    """解析本次请求的租户/知识库。租户来自 AuthMiddleware，知识库来自请求。"""
+    tenant_id = getattr(request.state, "tenant_id", settings.default_tenant_id)
+    return tenant_id, kb_id or settings.default_kb_id
 
 
 def build_rag_user_msg(question: str, context_str: str) -> str:
@@ -111,14 +118,16 @@ def _prioritize_primary_doc(hits):
     return [h for h in hits if h.doc_name == best] + [h for h in hits if h.doc_name != best]
 
 
-async def retrieve_context(question: str) -> tuple[str, List[Source]]:
+async def retrieve_context(question: str, tenant_id: str, kb_id: str) -> tuple[str, List[Source]]:
     """RAG 检索（阻塞调用放线程池），返回 (编号资料文本, 来源列表)。"""
     is_list = _is_list_query(question)
     limit = settings.list_query_top_k if is_list else settings.retrieve_top_k
     # 候选多于最终上下文，留出文档级聚合并给主文档补位的余量；
     # 列举型需要覆盖主文档全部块，候选取更深
     candidates = max(limit * 5, 50) if is_list else max(limit * 2, 20)
-    hits = await asyncio.to_thread(retriever.search_with_meta, question, candidates)
+    hits = await asyncio.to_thread(
+        retriever.search_with_meta, question, candidates, tenant_id, kb_id
+    )
     return build_context_and_sources(_prioritize_primary_doc(hits)[:limit])
 
 
@@ -141,11 +150,15 @@ async def verify_and_fix_answer(answer: str, context_str: str) -> tuple[List[int
 
 
 @app.post("/query", response_model=QueryResponse, summary="同步问答接口（RAG增强，支持多轮）")
-async def chat(req: QueryRequest):
+async def chat(req: QueryRequest, request: Request):
     session_id = req.session_id or uuid.uuid4().hex
-    logger.info(f"收到同步请求 session={session_id[:8]}, question={req.question}, temperature={req.temperature}")
+    tenant_id, kb_id = _scope_from(request, req.kb_id)
+    logger.info(
+        f"收到同步请求 tenant={tenant_id}, kb={kb_id}, session={session_id[:8]}, "
+        f"question={req.question}, temperature={req.temperature}"
+    )
     try:
-        history = await conversation_store.get_history(session_id)
+        history = await conversation_store.get_history(tenant_id, session_id)
 
         # 追问改写：把「那它呢」这类依赖上文的追问变成独立查询，再拿去检索
         search_query = req.question
@@ -153,13 +166,13 @@ async def chat(req: QueryRequest):
             search_query = await llm_client.rewrite_query(history, req.question)
             logger.info(f"查询改写：{req.question!r} -> {search_query!r}")
 
-        context_str, sources = await retrieve_context(search_query)
+        context_str, sources = await retrieve_context(search_query, tenant_id, kb_id)
         user_msg = build_rag_user_msg(req.question, context_str)
         messages = history + [{"role": "user", "content": user_msg}]
 
         answer = await llm_client.chat(messages, temperature=req.temperature)
         removed_citations, answer = await verify_and_fix_answer(answer, context_str)
-        await conversation_store.append(session_id, req.question, answer)
+        await conversation_store.append(tenant_id, session_id, req.question, answer)
 
         return QueryResponse(
             answer=answer,
@@ -176,17 +189,21 @@ async def chat(req: QueryRequest):
 
 
 @app.post("/stream-query", summary="SSE流式问答接口（RAG增强，支持多轮）")
-async def stream_chat(req: StreamQueryRequest):
+async def stream_chat(req: StreamQueryRequest, request: Request):
     session_id = req.session_id or uuid.uuid4().hex
-    logger.info(f"收到流式请求 session={session_id[:8]}, question={req.question}, temperature={req.temperature}")
+    tenant_id, kb_id = _scope_from(request, req.kb_id)
+    logger.info(
+        f"收到流式请求 tenant={tenant_id}, kb={kb_id}, session={session_id[:8]}, "
+        f"question={req.question}, temperature={req.temperature}"
+    )
 
-    history = await conversation_store.get_history(session_id)
+    history = await conversation_store.get_history(tenant_id, session_id)
     search_query = req.question
     if settings.query_rewrite_enabled and history:
         search_query = await llm_client.rewrite_query(history, req.question)
         logger.info(f"查询改写：{req.question!r} -> {search_query!r}")
 
-    context_str, sources = await retrieve_context(search_query)
+    context_str, sources = await retrieve_context(search_query, tenant_id, kb_id)
     user_msg = build_rag_user_msg(req.question, context_str)
     messages = history + [{"role": "user", "content": user_msg}]
 
@@ -201,7 +218,7 @@ async def stream_chat(req: StreamQueryRequest):
         answer = "".join(answer_parts)
         # 引用校验即修正：答案流完后再校验一次，删掉无依据的引用句，有改动才下发事件替换前端气泡
         removed, fixed_answer = await verify_and_fix_answer(answer, context_str)
-        await conversation_store.append(session_id, req.question, fixed_answer)
+        await conversation_store.append(tenant_id, session_id, req.question, fixed_answer)
         if removed:
             yield f"data: {json.dumps({'type': 'citation_fixed', 'removed': removed, 'fixed': fixed_answer}, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
@@ -210,10 +227,11 @@ async def stream_chat(req: StreamQueryRequest):
 
 
 @app.post("/upload-doc", response_model=UploadResponse, summary="上传文档入库（pdf/txt/md）")
-async def upload_doc(file: UploadFile = File(...)):
+async def upload_doc(request: Request, file: UploadFile = File(...), kb_id: Optional[str] = Form(None)):
     if not file.filename:
         raise HTTPException(status_code=400, detail="缺少文件名")
-    logger.info(f"收到文档上传：filename={file.filename}")
+    tenant_id, kb_id = _scope_from(request, kb_id)
+    logger.info(f"收到文档上传：tenant={tenant_id}, kb={kb_id}, filename={file.filename}")
     suffix = Path(file.filename).suffix.lower()
     if suffix not in [".pdf", ".txt", ".md"]:
         logger.warning(f"不支持文件类型：{suffix}")
@@ -225,38 +243,41 @@ async def upload_doc(file: UploadFile = File(...)):
             tmp_path = Path(tmp.name)
         # 解析（含 OCR）与入库都是阻塞/CPU 密集，放线程池避免卡住事件循环
         chunks = await asyncio.to_thread(parse_and_chunk, tmp_path)
-        cnt = await asyncio.to_thread(retriever.add_chunks, chunks, file.filename)
+        cnt = await asyncio.to_thread(retriever.add_chunks, chunks, file.filename, tenant_id, kb_id)
         tmp_path.unlink()
-        logger.info(f"文档入库完成，生成chunk数量：{cnt}")
+        logger.info(f"文档入库完成 tenant={tenant_id}, kb={kb_id}, chunks={cnt}")
         return UploadResponse(msg="文件入库成功", chunk_count=cnt)
     except Exception as e:
         logger.exception("文档上传入库失败")
         raise HTTPException(status_code=500, detail=f"文档处理失败：{str(e)}")
 
 
-@app.post("/clear-collection", response_model=ClearResponse, summary="清空向量知识库")
-def clear_collection():
-    logger.info("执行清空向量库操作")
+@app.post("/clear-collection", response_model=ClearResponse, summary="清空当前租户的某个知识库")
+def clear_collection(request: Request, kb_id: Optional[str] = Query(None)):
+    tenant_id, kb_id = _scope_from(request, kb_id)
+    logger.info(f"执行清空 knowledge base：tenant={tenant_id}, kb={kb_id}")
     try:
-        retriever.clear()
-        return ClearResponse(msg="向量库已清空")
+        retriever.clear(tenant_id, kb_id)
+        return ClearResponse(msg=f"知识库已清空（tenant={tenant_id}, kb={kb_id}）")
     except Exception as e:
-        logger.exception("清空向量库失败")
+        logger.exception("清空知识库失败")
         raise HTTPException(status_code=500, detail=f"清空失败：{str(e)}")
 
 
 @app.post("/clear-session", response_model=ClearResponse, summary="清除某个会话的多轮历史")
-async def clear_session(req: SessionClearRequest):
-    existed = await conversation_store.clear(req.session_id)
-    logger.info(f"清除会话 session={req.session_id[:8]}, existed={existed}")
+async def clear_session(req: SessionClearRequest, request: Request):
+    tenant_id = getattr(request.state, "tenant_id", settings.default_tenant_id)
+    existed = await conversation_store.clear(tenant_id, req.session_id)
+    logger.info(f"清除会话 tenant={tenant_id}, session={req.session_id[:8]}, existed={existed}")
     return ClearResponse(msg="会话已清除" if existed else "会话不存在或已过期")
 
 
-@app.get("/list-chunks", response_model=ChunkListResponse, summary="调试接口：查看全部文本块")
-def list_chunks():
-    logger.info("查询全部chunk列表")
+@app.get("/list-chunks", response_model=ChunkListResponse, summary="调试接口：查看当前知识库的文本块")
+def list_chunks(request: Request, kb_id: Optional[str] = Query(None)):
+    tenant_id, kb_id = _scope_from(request, kb_id)
+    logger.info(f"查询 chunk 列表：tenant={tenant_id}, kb={kb_id}")
     try:
-        chunks = retriever.list_all_chunks()
+        chunks = retriever.list_all_chunks(tenant_id, kb_id)
         return ChunkListResponse(chunks=chunks)
     except Exception as e:
         logger.exception("获取chunk列表失败")

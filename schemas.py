@@ -5,11 +5,13 @@ from typing import List, Optional
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=2, description="用户提问，不能为空")
     session_id: Optional[str] = Field(default=None, description="会话ID，不传则新开会话")
+    kb_id: Optional[str] = Field(default=None, description="知识库ID，默认 default")
     temperature: float = Field(default=0.1, ge=0.0, le=1.0, description="模型温度，RAG场景一般偏低")
 
 class StreamQueryRequest(BaseModel):
     question: str = Field(..., min_length=2)
     session_id: Optional[str] = Field(default=None, description="会话ID，不传则新开会话")
+    kb_id: Optional[str] = Field(default=None, description="知识库ID，默认 default")
     temperature: float = Field(default=0.1, ge=0.0, le=1.0)
 
 class Source(BaseModel):

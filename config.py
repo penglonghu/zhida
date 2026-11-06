@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     # ===== 引用溯源 =====
     citation_verify_enabled: bool = False  # 引用校验：额外一次 LLM 调用校验 [n] 引用是否被资料支持（增延迟，默认关）
 
+    # ===== 多租户 / 知识库隔离 =====
+    default_tenant_id: str = "default"     # 未认证/未指定时的租户，兼容单租户部署
+    default_kb_id: str = "default"         # 未指定时的知识库
+    tenant_api_keys: str = ""              # "tenantA=keyA,tenantB=keyB"；SERVICE_API_KEY 映射到 default 租户
+
     # ===== 安全可观测 =====
     auth_enabled: bool = False             # 是否开启 API Key 认证（私有化交付时开，POC 先关）
     service_api_key: str = ""              # 认证密钥（auth_enabled=True 时必填）
