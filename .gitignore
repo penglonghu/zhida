@@ -52,6 +52,10 @@ jianli.pdf
 # ===== Redis 运行时数据 =====
 redis_data/
 
+# ===== 备份与 TLS 证书（含私钥，绝不入库）=====
+backups/
+deploy/certs/
+
 # ===== DeepSeek 账单统计（含 user_id/api_key 名，敏感，不入库）=====
 amount-*.csv
 cost-*.csv

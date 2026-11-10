@@ -85,14 +85,49 @@ cp .env.example .env   # 填入真实 LLM_API_KEY
 # 3. 构建并启动（nginx + zhida + qdrant + redis 四个服务）
 docker compose up -d --build
 
-# 4. 验证（统一走 nginx 的 80 端口入口）
-curl http://localhost/health
-curl http://localhost/ready
+# 4. 验证（统一走 nginx 入口；宿主机映射 8080，避免与本机其他 80 服务冲突）
+curl http://localhost:8080/health
+curl http://localhost:8080/ready
 ```
 
-浏览器打开 `http://localhost` 即可使用（nginx 托管 chat.html 并反代 API）。
+浏览器打开 `http://localhost:8080` 即可使用（nginx 托管 chat.html 并反代 API）。
 
-compose 会自动覆盖 `QDRANT_HOST=qdrant`、`EMBED_DEVICE=cpu`、`REDIS_ENABLED=true`、`REDIS_HOST=redis`（容器内网络名、Linux 推理设备、多实例共享态）。生产形态下应用（zhida）与向量库（qdrant）不对外暴露端口，统一由 nginx 的 80 端口入口；将来加 HTTPS 只需改 `deploy/nginx.conf`。
+compose 会自动覆盖 `QDRANT_HOST=qdrant`、`EMBED_DEVICE=cpu`、`REDIS_ENABLED=true`、`REDIS_HOST=redis`（容器内网络名、Linux 推理设备、多实例共享态）。生产形态下应用（zhida）与向量库（qdrant）不对外暴露端口，统一由 nginx 入口。
+
+### HTTPS（生产必开）
+
+```bash
+# 1. 放证书：生产用正式证书；本地测试可生成自签证书
+scripts/gen_self_signed_cert.sh
+# deploy/certs/fullchain.pem + privkey.pem
+
+# 2. 用 TLS 覆盖层启动（HTTP 仅保留 /health、/ready，其余 301 到 HTTPS）
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
+
+# 3. 访问
+#    本地：https://localhost:8443
+#    生产：把 docker-compose.tls.yml 里的 "8443:443" 改成 "443:443"
+```
+
+- 覆盖层会设置 `COOKIE_SECURE=true`，登录 Cookie 只在 HTTPS 下发送。
+- 已启用 HSTS、`X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy`。
+- 自签证书浏览器会告警，仅用于本地验证；生产必须用受信任证书。
+
+### 备份与恢复
+
+```bash
+# 在线备份：Qdrant 快照 + Redis RDB + .env + SHA256SUMS
+scripts/backup.sh
+# → backups/20261110-102644/
+
+# 恢复（会覆盖当前知识库与会话，需确认）
+scripts/restore.sh backups/20261110-102644 --yes
+```
+
+- 默认保留 7 天：`KEEP_DAYS=7 scripts/backup.sh`；`KEEP_DAYS=0` 不清理。
+- 定时任务示例：`0 2 * * * cd /opt/zhida && scripts/backup.sh >> logs/backup.log 2>&1`
+- 备份包含知识库原文与 `.env`，属于敏感数据：`backups/`、`deploy/certs/` 已加入 `.gitignore`，存放和传输需加密。
+- `.env` 备份不会自动恢复，恢复后请人工核对配置差异。
 
 ## 配置说明
 

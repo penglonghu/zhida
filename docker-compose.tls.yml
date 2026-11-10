@@ -1,0 +1,17 @@
+# HTTPS 覆盖层：
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
+# 需要先把证书放到 deploy/certs/{fullchain.pem,privkey.pem}；
+# 本地测试可运行 scripts/gen_self_signed_cert.sh 生成自签证书。
+services:
+  nginx:
+    ports: !override
+      - "8080:80"     # HTTP：探针 + 301 跳转
+      - "8443:443"    # HTTPS 入口（生产换成 443:443）
+    volumes: !override
+      - ./deploy/nginx.tls.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/certs:/etc/nginx/certs:ro
+      - ./chat.html:/usr/share/nginx/html/chat.html:ro
+
+  zhida:
+    environment:
+      COOKIE_SECURE: "true"   # 登录 Cookie 只在 HTTPS 下发送
