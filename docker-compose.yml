@@ -1,3 +1,10 @@
+# 所有容器统一限制 stdout 日志大小，避免 json-file 无限增长
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   zhida:
     build:
@@ -29,6 +36,7 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
+    logging: *default-logging
 
   qdrant:
     image: qdrant/qdrant
@@ -36,10 +44,12 @@ services:
     volumes:
       - ./qdrant_storage:/qdrant/storage
     restart: unless-stopped
+    logging: *default-logging
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - ./redis_data:/data        # RDB 持久化，容器重启不丢会话/限流计数
     # 仅 compose 内网访问，不对外暴露端口（会话与限流是应用内部状态）
@@ -54,3 +64,4 @@ services:
     depends_on:
       - zhida
     restart: unless-stopped
+    logging: *default-logging

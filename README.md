@@ -129,6 +129,12 @@ scripts/restore.sh backups/20261110-102644 --yes
 - 备份包含知识库原文与 `.env`，属于敏感数据：`backups/`、`deploy/certs/` 已加入 `.gitignore`，存放和传输需加密。
 - `.env` 备份不会自动恢复，恢复后请人工核对配置差异。
 
+### 日志
+
+- 应用日志写入 `logs/service.log`，按 `LOG_MAX_BYTES`（默认 10MB）轮转为 `service.log.1..n`，保留 `LOG_BACKUP_COUNT`（默认 5）份。
+- 容器 stdout/stderr 由 compose 的 json-file 驱动限制为 10MB × 3，避免 `docker logs` 无限增长。
+- 审计日志（`audit ...` 行）同样写入 `service.log`，含 trace_id、租户、状态码、耗时。
+
 ## 配置说明
 
 全部配置集中在 `config.py`（`Settings` 类），通过 `.env` / 环境变量覆盖。完整项见 `.env.example`。关键项：

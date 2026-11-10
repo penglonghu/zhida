@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     service_host: str = "0.0.0.0"
     service_port: int = 8000
     log_level: str = "INFO"
+    log_max_bytes: int = 10 * 1024 * 1024   # 单个日志文件上限 10MB
+    log_backup_count: int = 5               # 保留 5 个历史文件
 
     # ===== Embedding =====
     embed_model_name: str = "./models/bge-small-zh"
