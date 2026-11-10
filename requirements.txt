@@ -17,3 +17,5 @@ rapidocr-onnxruntime
 pillow
 # 多实例高可用：会话存储/限流共享状态（redis_enabled=true 时启用）
 redis
+# 监控：/metrics 暴露 Prometheus 标准指标
+prometheus-client

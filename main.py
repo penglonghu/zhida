@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import List, Optional
@@ -20,7 +21,12 @@ from core.embedding import embedding_client
 from core.doc_parser import parse_and_chunk
 from core.conversation import conversation_store
 from core.middleware import TraceMiddleware, AuditMiddleware, AuthMiddleware, RateLimitMiddleware
+from core.metrics import (
+    MetricsMiddleware, RETRIEVAL_DURATION, DOCUMENTS_UPLOADED, CHUNKS_ADDED,
+    ANSWERS, READY, COMPONENT_READY,
+)
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from config import settings
 from core.logging import setup_logging
 
@@ -30,8 +36,9 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="知答 ZhiDa", version="0.1.0")
 
 # 中间件注册顺序（Starlette 后 add 的在外层、先执行）：
-# RateLimit(最内) -> Audit -> Auth -> Trace -> CORS(最外，处理预检)
+# RateLimit(最内) -> Audit -> Auth -> Trace -> CORS -> Metrics(最外)
 # Auth 必须先于 Audit/RateLimit，后者才能拿到租户身份。
+# Metrics 放最外层：认证 401、限流 429、路由 404 也计入指标。
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(AuditMiddleware)
 app.add_middleware(AuthMiddleware)
@@ -43,6 +50,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(MetricsMiddleware)
 
 
 def _scope_from(request: Request, kb_id: Optional[str] = None) -> tuple[str, str]:
@@ -171,9 +179,13 @@ async def retrieve_context(question: str, tenant_id: str, kb_id: str) -> tuple[s
     # 候选多于最终上下文，留出文档级聚合并给主文档补位的余量；
     # 列举型需要覆盖主文档全部块，候选取更深
     candidates = max(limit * 5, 50) if is_list else max(limit * 2, 20)
-    hits = await asyncio.to_thread(
-        retriever.search_with_meta, question, candidates, tenant_id, kb_id
-    )
+    start = time.perf_counter()
+    try:
+        hits = await asyncio.to_thread(
+            retriever.search_with_meta, question, candidates, tenant_id, kb_id
+        )
+    finally:
+        RETRIEVAL_DURATION.observe(time.perf_counter() - start)
     return build_context_and_sources(_prioritize_primary_doc(hits)[:limit])
 
 
@@ -236,8 +248,10 @@ async def chat(req: QueryRequest, request: Request):
         removed_citations, answer = await verify_and_fix_answer(answer, context_str)
         if _is_no_answer(answer):
             logger.info("资料未覆盖该问题，隐藏参考来源 tenant=%s, kb=%s", tenant_id, kb_id)
+            ANSWERS.labels("no_answer").inc()
             sources = []
         else:
+            ANSWERS.labels("answered").inc()
             sources = _filter_used_sources(answer, sources)
         await conversation_store.append(tenant_id, session_id, req.question, answer)
 
@@ -285,8 +299,10 @@ async def stream_chat(req: StreamQueryRequest, request: Request):
         removed, fixed_answer = await verify_and_fix_answer(answer, context_str)
         # 资料未覆盖问题时不展示参考来源；sources 延后到答案结束后发，才能据此判断
         if _is_no_answer(fixed_answer):
+            ANSWERS.labels("no_answer").inc()
             final_sources = []
         else:
+            ANSWERS.labels("answered").inc()
             final_sources = _filter_used_sources(fixed_answer, sources)
         if not final_sources:
             logger.info("资料未覆盖该问题，隐藏参考来源 tenant=%s, kb=%s", tenant_id, kb_id)
@@ -318,6 +334,8 @@ async def upload_doc(request: Request, file: UploadFile = File(...), kb_id: Opti
         chunks = await asyncio.to_thread(parse_and_chunk, tmp_path)
         cnt = await asyncio.to_thread(retriever.add_chunks, chunks, file.filename, tenant_id, kb_id)
         tmp_path.unlink()
+        DOCUMENTS_UPLOADED.inc()
+        CHUNKS_ADDED.inc(cnt)
         logger.info(f"文档入库完成 tenant={tenant_id}, kb={kb_id}, chunks={cnt}")
         return UploadResponse(msg="文件入库成功", chunk_count=cnt)
     except Exception as e:
@@ -389,7 +407,16 @@ async def ready():
         except Exception as e:
             checks["redis"] = f"down: {e}"
     ok = all(v == "ok" for v in checks.values())
+    READY.set(1 if ok else 0)
+    for name, value in checks.items():
+        COMPONENT_READY.labels(name).set(1 if value == "ok" else 0)
     return JSONResponse(status_code=200 if ok else 503, content={"ready": ok, "checks": checks})
+
+
+@app.get("/metrics", summary="Prometheus 指标（不鉴权，供监控系统抓取）")
+def metrics():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
 
 if __name__ == "__main__":
     import uvicorn

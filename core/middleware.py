@@ -94,7 +94,8 @@ class AuditMiddleware:
             )
 
 
-_PUBLIC_PATHS = ("/health", "/ready", "/login", "/logout", "/me", "/docs", "/openapi.json", "/redoc")
+# /metrics 不鉴权：Prometheus 抓取通常不带凭证；如需限制来源请在 nginx 层做 IP 白名单
+_PUBLIC_PATHS = ("/health", "/ready", "/metrics", "/login", "/logout", "/me", "/docs", "/openapi.json", "/redoc")
 
 
 class AuthMiddleware:
@@ -261,7 +262,8 @@ class RateLimitMiddleware:
         if not settings.rate_limit_enabled:
             await self.app(scope, receive, send)
             return
-        if scope.get("path", "") in ("/health", "/ready"):
+        # 探针与指标抓取不计入限流：健康检查每 15s 一次，抓取也不该被当成用户流量
+        if scope.get("path", "") in ("/health", "/ready", "/metrics"):
             await self.app(scope, receive, send)
             return
 

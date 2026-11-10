@@ -18,7 +18,7 @@ RAG 知识库问答系统：上传文档 → 分块 → 本地 BGE 嵌入 → Qd
 - **多轮对话**：服务端会话管理 + 追问自动改写（「那它呢」→ 独立查询），解决代词指代
 - **流式输出**：标准 SSE 协议（JSON 编码 + `data: [DONE]` 终止）
 - **安全**：API Key 认证、请求限流、Prompt 注入防护
-- **可观测**：TraceID 全链路（响应头 + 每条日志）、结构化审计访问日志
+- **可观测**：TraceID 全链路（响应头 + 每条日志）、结构化审计访问日志、`/metrics` Prometheus 标准指标 + 内置告警脚本
 - **提示词外置**：`prompts/` 目录热加载，改提示词免重启
 
 ## 目录结构
@@ -36,6 +36,7 @@ RAG 知识库问答系统：上传文档 → 分块 → 本地 BGE 嵌入 → Qd
 │   ├── conversation.py  # 多轮会话存储（内存/Redis 双后端）
 │   ├── redis_client.py  # Redis 连接单例（多实例共享态）
 │   ├── middleware.py    # trace/审计/认证/限流中间件
+│   ├── metrics.py       # Prometheus 指标 + HTTP 采集中间件
 │   ├── tracing.py       # trace_id 上下文
 │   └── logging.py       # 集中式日志 + trace 注入
 ├── prompts/             # system.md / rewrite.md（外置提示词）
@@ -135,6 +136,63 @@ scripts/restore.sh backups/20261110-102644 --yes
 - 容器 stdout/stderr 由 compose 的 json-file 驱动限制为 10MB × 3，避免 `docker logs` 无限增长。
 - 审计日志（`audit ...` 行）同样写入 `service.log`，含 trace_id、租户、状态码、耗时。
 
+### 监控与告警
+
+应用在 `/metrics` 暴露 Prometheus 标准指标；metrics 端点为最外层采集，认证 401、限流 429、路由 404 都会被统计。
+
+| 指标 | 类型 | 说明 |
+|---|---|---|
+| `zhida_http_requests_total{method,route,status}` | Counter | 请求量，按路由与状态码 |
+| `zhida_http_request_duration_seconds{route}` | Histogram | 请求耗时（含流式全程），可算 P95/P99 |
+| `zhida_http_in_flight_requests` | Gauge | 正在处理中的请求数 |
+| `zhida_llm_requests_total{operation,status}` | Counter | LLM 调用（chat/stream/rewrite/verify × ok/error/cancelled） |
+| `zhida_llm_request_duration_seconds{operation}` | Histogram | LLM 调用耗时（含重试） |
+| `zhida_retrieval_duration_seconds` | Histogram | 检索耗时（嵌入 + 召回 + 融合） |
+| `zhida_documents_uploaded_total` / `zhida_document_chunks_total` | Counter | 入库文档数 / 文本块数 |
+| `zhida_answers_total{result}` | Counter | 问答结果（answered / no_answer） |
+| `zhida_ready` / `zhida_component_ready{component}` | Gauge | 整体/组件就绪状态（由 `/ready` 更新） |
+
+```bash
+curl http://localhost:8080/metrics | head -40
+```
+
+> `/metrics` 不鉴权是刻意的：Prometheus 抓取通常不带凭证。若服务对外暴露，请在 nginx 为 `/metrics` 加来源 IP 白名单，或只允许内网抓取。
+
+**内置告警脚本**（零额外容器，拉 `/ready` + `/metrics` 做窗口差分）：
+
+```bash
+# 手动跑一次（只打印不推送）
+python3 scripts/alert.py --target http://localhost:8080 --dry-run
+
+# 企业微信群机器人
+python3 scripts/alert.py --webhook-type wecom \
+  --webhook-url 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx'
+
+# 钉钉：机器人安全设置选“自定义关键词”，消息含该关键词（如“知答”）
+python3 scripts/alert.py --webhook-type dingtalk \
+  --webhook-url 'https://oapi.dingtalk.com/robot/send?access_token=xxx'
+```
+
+cron 每 5 分钟跑（与 `ALERT_WINDOW_SECONDS=300` 对齐）：
+
+```cron
+*/5 * * * * cd /opt/zhida && .venv/bin/python scripts/alert.py >> logs/alert.log 2>&1
+```
+
+- 规则：服务未就绪/不可达、5xx 错误率、LLM 调用错误率、429 比例、P95 延迟（流式单独放宽）、指标抓取失败。
+- 首次运行只建立基线；同一告警 `ALERT_COOLDOWN_SECONDS`（默认 30 分钟）内只推一次；故障消除后推送「已恢复」。
+- 全部门限值可在 `.env` 的 `ALERT_*` 调整，见 `.env.example`。
+
+**接入现有 Prometheus**（可选）：
+
+```yaml
+scrape_configs:
+  - job_name: zhida
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["zhida.example.com:8080"]   # 或内网地址
+```
+
 ## 配置说明
 
 全部配置集中在 `config.py`（`Settings` 类），通过 `.env` / 环境变量覆盖。完整项见 `.env.example`。关键项：
@@ -168,7 +226,8 @@ scripts/restore.sh backups/20261110-102644 --yes
 | GET | `/knowledge-bases` | 列出当前租户的知识库（前端选择器用） |
 | GET | `/list-chunks` | 调试：查看当前租户/知识库的文本块 |
 | GET | `/health` | 存活探针 |
-| GET | `/ready` | 就绪探针（Qdrant 连通 + 模型文件） |
+| GET | `/ready` | 就绪探针（Qdrant/Redis 连通 + 模型文件） |
+| GET | `/metrics` | Prometheus 指标（不鉴权，探针与抓取不计入限流） |
 
 ### 多轮对话示例
 

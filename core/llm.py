@@ -1,12 +1,20 @@
 import asyncio
 import json
 import re
+import time
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Tuple
 
 import httpx
 
 from config import settings
+from core.metrics import LLM_DURATION, LLM_REQUESTS
+
+
+def _observe(operation: str, status: str, start: float) -> None:
+    """记录一次 LLM 操作的耗时与结果（含内部重试的总时长）。"""
+    LLM_DURATION.labels(operation).observe(time.perf_counter() - start)
+    LLM_REQUESTS.labels(operation, status).inc()
 
 
 class LLMClient:
@@ -112,19 +120,47 @@ class LLMClient:
     async def chat(self, messages: List[Dict], temperature: float = 0.1) -> str:
         """多轮对话：messages 是历史 + 当前 user 消息（不含 system），内部自动前置 system。"""
         full = [{"role": "system", "content": self.system_prompt}] + messages
-        return await self._chat_raw(full, temperature)
+        start = time.perf_counter()
+        status = "ok"
+        try:
+            return await self._chat_raw(full, temperature)
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            _observe("chat", status, start)
 
     async def stream_chat(self, messages: List[Dict], temperature: float = 0.1) -> AsyncGenerator[str, None]:
         full = [{"role": "system", "content": self.system_prompt}] + messages
-        async for delta in self._stream_raw(full, temperature):
-            yield delta
+        start = time.perf_counter()
+        status = "ok"
+        try:
+            async for delta in self._stream_raw(full, temperature):
+                yield delta
+        except GeneratorExit:
+            # 客户端中途断开：不是服务错误，单独计数，避免污染错误率
+            status = "cancelled"
+            raise
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            _observe("stream", status, start)
 
     async def rewrite_query(self, history: List[Dict], question: str) -> str:
         """把追问改写成不依赖上下文的独立检索查询（多轮 RAG 的关键一步）。"""
         full = [{"role": "system", "content": self.rewrite_prompt}]
         full.extend(history)
         full.append({"role": "user", "content": f"当前追问：{question}"})
-        return (await self._chat_raw(full, temperature=0.0)).strip()
+        start = time.perf_counter()
+        status = "ok"
+        try:
+            return (await self._chat_raw(full, temperature=0.0)).strip()
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            _observe("rewrite", status, start)
 
     async def verify_citations(self, answer: str, chunks_text: str) -> Tuple[List[int], str]:
         """校验即修正：返回 (被移除的无依据 [n] 编号列表, 修正后的答案)。
@@ -133,7 +169,15 @@ class LLMClient:
         """
         full = [{"role": "system", "content": self.verify_prompt}]
         full.append({"role": "user", "content": f"【回答】\n{answer}\n\n【资料】\n{chunks_text}"})
-        raw = (await self._chat_raw(full, temperature=0.0)).strip()
+        start = time.perf_counter()
+        status = "ok"
+        try:
+            raw = (await self._chat_raw(full, temperature=0.0)).strip()
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            _observe("verify", status, start)
         # 稳健解析：去掉可能的 ```json 围栏，截取首个 {...} 再 json 解析
         raw = re.sub(r"^```(?:json)?\s*|```$", "", raw, flags=re.MULTILINE).strip()
         m = re.search(r"\{.*\}", raw, flags=re.DOTALL)
