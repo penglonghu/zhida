@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>知答 ZhiDa 架构</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1080px; height: 700px; overflow: hidden; }
+  body {
+    font-family: "PingFang SC", "Hiragino Sans GB", "STHeiti", "Microsoft YaHei", sans-serif;
+    background: #f7f8fa;
+    color: #111827;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    width: 1080px; height: 700px;
+    padding: 24px 30px 18px;
+    display: flex; flex-direction: column;
+  }
+
+  /* ---------- 标题 ---------- */
+  .head { display: flex; align-items: baseline; gap: 12px; }
+  .head h1 { font-size: 22px; font-weight: 700; letter-spacing: .5px; }
+  .head .badge {
+    font-size: 11px; color: #2563eb; background: #eff6ff;
+    border: 1px solid #bfdbfe; border-radius: 999px; padding: 2px 9px;
+  }
+  .head .sub { margin-left: auto; font-size: 11px; color: #6b7280; }
+  .lead { margin-top: 6px; font-size: 11.5px; color: #4b5563; line-height: 1.5; }
+  .lead b { color: #1f2937; }
+
+  /* ---------- 通路容器 ---------- */
+  .lane {
+    margin-top: 12px;
+    border-radius: 12px;
+    padding: 11px 16px 13px;
+    background: #ffffff;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+  }
+  .lane.qa { background: #f6f9ff; border-color: #dbe7fb; }
+  .lane.ingest { background: #f5fbf7; border-color: #d5eedd; }
+
+  .lane-head { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; }
+  .lane-name {
+    font-size: 12px; font-weight: 700; padding: 2px 10px; border-radius: 6px;
+    flex: 0 0 auto;
+  }
+  .qa .lane-name { color: #1d4ed8; background: #dbeafe; }
+  .ingest .lane-name { color: #047857; background: #d1fae5; }
+  .lane-desc { font-size: 10.5px; color: #6b7280; }
+  .lane-tag {
+    margin-left: auto; flex: 0 0 auto; font-size: 10px; color: #6b7280;
+    border: 1px dashed #cbd5e1; border-radius: 999px; padding: 2px 9px;
+  }
+
+  /* ---------- 流程 ---------- */
+  .flow { display: flex; align-items: stretch; justify-content: space-between; }
+
+  .node {
+    flex: 0 0 auto;
+    background: #ffffff;
+    border: 1px solid #e2e8f0;
+    border-radius: 9px;
+    padding: 10px 12px 11px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .node .t {
+    display: flex; align-items: center;
+    font-size: 12.5px; font-weight: 700; color: #111827;
+    line-height: 1.35; white-space: nowrap;
+  }
+  .node .n {
+    flex: 0 0 15px; width: 15px; height: 15px; margin-right: 6px;
+    border-radius: 50%; background: #eef2f7; color: #475569;
+    font-size: 9.5px; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .node .d { font-size: 10.5px; line-height: 1.55; color: #4b5563; }
+  .node .d.hl { color: #1f2937; font-weight: 600; }
+
+  .qa .node { border-left: 3px solid #93b4f5; }
+  .ingest .node { border-left: 3px solid #7bc79b; }
+  .qa .node.accent-4 { border-left-color: #7c6df2; }
+  .ingest .node.accent-5 { border-left-color: #f0a63c; }
+
+  /* 箭头 */
+  .arrow { flex: 0 0 20px; align-self: center; height: 2px; background: #9aa7b8; position: relative; }
+  .arrow::after {
+    content: ""; position: absolute; right: -1px; top: -4px;
+    border-left: 8px solid #9aa7b8;
+    border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent;
+  }
+  .ingest .arrow { background: #86bfa0; }
+  .ingest .arrow::after { border-left-color: #86bfa0; }
+
+  /* ---------- 共享依赖 ---------- */
+  .band {
+    margin-top: 12px; padding: 11px 16px 13px;
+    background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+  }
+  .band-head { display: flex; align-items: center; gap: 9px; margin-bottom: 9px; }
+  .band-name {
+    font-size: 12px; font-weight: 700; color: #374151;
+    background: #f1f5f9; border-radius: 6px; padding: 2px 10px;
+  }
+  .band-desc { font-size: 10.5px; color: #6b7280; }
+  .cards { display: flex; gap: 14px; }
+  .card {
+    flex: 1 1 0;
+    background: #fbfcfe; border: 1px solid #e5e7eb; border-radius: 9px;
+    padding: 9px 12px 10px;
+  }
+  .card .ct { font-size: 11.5px; font-weight: 700; color: #1f2937; margin-bottom: 4px; }
+  .card .cd { font-size: 10px; line-height: 1.55; color: #6b7280; }
+
+  .foot {
+    margin-top: auto; padding-top: 9px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 10px; color: #6b7280;
+  }
+  .foot .dotline { display: flex; align-items: center; gap: 6px; }
+  .foot i {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: #93b4f5;
+  }
+  .foot i.g { background: #7bc79b; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="head">
+    <h1>知答 ZhiDa 架构</h1>
+    <span class="badge">FastAPI + 本地 BGE/BM25 混合检索 + Qdrant</span>
+    <span class="sub">参数取自 config.py / .env.example</span>
+  </div>
+  <div class="lead">
+    <b>问答通路</b>：问题 → FastAPI → 本地 BGE 稠密 + BM25 关键词 → 加权 RRF → 文档级聚合 → DeepSeek 流式生成 → 答案带 [n] 引用回链；
+    <b>入库通路</b>：上传 → 解析 → 分块 → 本地 BGE 嵌入 → Qdrant。两条通路共用 FastAPI 中间件，会话与限流可选走 Redis。
+  </div>
+
+  <!-- ================= 问答通路 ================= -->
+  <section class="lane qa">
+    <div class="lane-head">
+      <span class="lane-name">问答通路</span>
+      <span class="lane-desc">问题 → 追问改写 → 稠密 + 关键词检索 → 加权 RRF → 拼上下文 → 流式生成 → 引用回链</span>
+      <span class="lane-tag">在线请求</span>
+    </div>
+    <div class="flow">
+      <div class="node" style="width:168px">
+        <div class="t"><span class="n">1</span>浏览器 / API 客户端</div>
+        <div class="d">chat.html（SSE 渲染）</div>
+        <div class="d">X-API-Key / 登录 Cookie</div>
+        <div class="d">curl / 脚本直接调 API</div>
+      </div>
+      <div class="arrow"></div>
+
+      <div class="node" style="width:158px">
+        <div class="t"><span class="n">2</span>nginx 统一入口</div>
+        <div class="d">静态托管 chat.html</div>
+        <div class="d">API 反代 · SSE 关闭缓冲</div>
+        <div class="d">上传上限 25m</div>
+      </div>
+      <div class="arrow"></div>
+
+      <div class="node" style="width:190px">
+        <div class="t"><span class="n">3</span>FastAPI 中间件</div>
+        <div class="d">认证：Cookie / API Key</div>
+        <div class="d">限流 · TraceID · 审计日志</div>
+        <div class="d">会话 / 限流 → Redis（可选）</div>
+      </div>
+      <div class="arrow"></div>
+
+      <div class="node accent-4" style="width:230px">
+        <div class="t"><span class="n">4</span>混合检索</div>
+        <div class="d">稠密：本地 BGE-small-zh</div>
+        <div class="d">关键词：BM25（零依赖分词）</div>
+        <div class="d hl">加权 RRF：dense 1.0 / keyword 3.0</div>
+        <div class="d">k=60；文档级聚合，主文档优先</div>
+        <div class="d">读 Qdrant：tenant_id / kb_id 过滤</div>
+      </div>
+      <div class="arrow"></div>
+
+      <div class="node" style="width:158px">
+        <div class="t"><span class="n">5</span>生成与回链</div>
+        <div class="d">DeepSeek 兼容网关</div>
+        <div class="d">SSE 逐 token 流式输出</div>
+        <div class="d">超时 60 秒 · 可配多轮</div>
+        <div class="d">答案 [n] ↔ sources[] 引用</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 入库通路 ================= -->
+  <section class="lane ingest">
+    <div class="lane-head">
+      <span class="lane-name">入库通路</span>
+      <span class="lane-desc">上传 → 解析 → 分块 → 嵌入 → 写入 Qdrant；知识库按 tenant_id / kb_id 隔离</span>
+      <span class="lane-tag">上传 / 离线</span>
+    </div>
+    <div class="flow">
+      <div class="node" style="width:156px">
+        <div class="t"><span class="n">1</span>上传文档</div>
+        <div class="d">pdf / txt / md</div>
+        <div class="d">POST /upload-doc</div>
+        <div class="d">表单字段 kb_id 可选</div>
+      </div>
+      <div class="arrow"></div>
+
+      <div class="node" style="width:160px">
+        <div class="t"><span class="n">2</span>nginx 入口</div>
+        <div class="d">client_max_body_size 25m</div>
+        <div class="d">反代到 FastAPI</div>
+      </div>
+      <div class="arrow"></div>
+
+      <div class="node" style="width:200px">
+        <div class="t"><span class="n">3</span>FastAPI /upload-doc</div>
+        <div class="d">解析：pypdf 提取文本层</div>
+        <div class="d">扫描件回退 OCR（RapidOCR）</div>
+        <div class="d">txt / md 直读 UTF-8</div>
+      </div>
+      <div class="arrow"></div>
+
+      <div class="node" style="width:204px">
+        <div class="t"><span class="n">4</span>分块 + 嵌入</div>
+        <div class="d">分块 500 / 重叠 80</div>
+        <div class="d">本地 BGE 嵌入 · 512 维</div>
+        <div class="d">归一化后写入</div>
+      </div>
+      <div class="arrow"></div>
+
+      <div class="node accent-5" style="width:184px">
+        <div class="t"><span class="n">5</span>Qdrant 向量库</div>
+        <div class="d">集合 zhida · COSINE</div>
+        <div class="d">payload：tenant_id / kb_id</div>
+        <div class="d">doc_name / chunk_index</div>
+        <div class="d">供问答通路读取</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 共享依赖 ================= -->
+  <section class="band">
+    <div class="band-head">
+      <span class="band-name">共享依赖与运维</span>
+      <span class="band-desc">不随请求链路变化，两条通路共用；参数均可在 .env 调整</span>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="ct">Redis（可选）</div>
+        <div class="cd">会话历史 / 限流计数共享态<br>REDIS_ENABLED=false 时走进程内存</div>
+      </div>
+      <div class="card">
+        <div class="ct">Prometheus /metrics</div>
+        <div class="cd">HTTP / 检索 / LLM / 就绪指标<br>scripts/alert.py 窗口差分告警</div>
+      </div>
+      <div class="card">
+        <div class="ct">本地嵌入模型</div>
+        <div class="cd">models/bge-small-zh<br>懒加载，首次请求需数十秒</div>
+      </div>
+      <div class="card">
+        <div class="ct">备份与恢复</div>
+        <div class="cd">scripts/backup.sh / restore.sh<br>Qdrant 快照 + Redis RDB + .env</div>
+      </div>
+    </div>
+  </section>
+
+  <div class="foot">
+    <span class="dotline"><i></i>问答请求与数据流</span>
+    <span class="dotline"><i class="g"></i>入库写入流</span>
+    <span>图源 docs/architecture.src.html · 渲染 Chrome headless (scale 2)</span>
+  </div>
+
+</div>
+</body>
+</html>

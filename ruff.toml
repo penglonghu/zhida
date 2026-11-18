@@ -1,0 +1,20 @@
+# ruff 静态检查配置（CI 门禁与 scripts/dev_check.sh 共用）
+#
+# 选型说明：
+# - 只启用「语法/导入/未定义名字」级别的真错误规则（E4/E7/E9/F），
+#   不启用 UP/ANN/D 等风格规则：现有业务代码不在本次改造范围，避免风格告警淹没真问题。
+# - 若以后要清理风格，可先 `ruff check --select I,UP --fix` 分批修，再扩大规则集。
+# - 目标不是"零告警"，而是"零 error"：CI 只拦会真正导致运行时报错的问题。
+
+target-version = "py313"   # CI 用 Python 3.13（见 .github/workflows/ci.yml）；本地开发是 3.14，代码需两版都能跑
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+
+# 两处历史遗留的无害冗余 import（业务代码不在本次改造范围，故不直接改 .py）：
+#   main.py:20          from core.embedding import embedding_client  —— 未使用
+#   scripts/alert.py:39 from dataclasses import dataclass, field    —— field 未使用
+# 后续清理掉这两行 import 后，可删除本节豁免，恢复全量 F401 检查。
+[lint.per-file-ignores]
+"main.py" = ["F401"]
+"scripts/alert.py" = ["F401"]

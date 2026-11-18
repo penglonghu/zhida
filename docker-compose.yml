@@ -10,7 +10,7 @@ services:
     build:
       context: .
       args:
-        # pip 源可通过 .env 覆盖（本机被透明代理拦清华源时设 PIP_INDEX_URL=https://pypi.org/simple）
+        # pip 源可通过 .env 覆盖（海外环境或镜像源不通时设 PIP_INDEX_URL=https://pypi.org/simple）
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
         TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
     # 生产由 nginx 统一入口，应用不直接暴露 8000；本地调试可临时加 "8000:8000"
@@ -57,7 +57,7 @@ services:
   nginx:
     image: nginx:1.27-alpine
     ports:
-      - "8080:80"                 # 统一入口：前端静态 + API 反代（宿主机 80 被小智项目 brew nginx 占用，改 8080）
+      - "8080:80"                 # 统一入口：前端静态 + API 反代（80 端口常被宿主机已有服务占用，默认映射 8080）
     volumes:
       - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./chat.html:/usr/share/nginx/html/chat.html:ro

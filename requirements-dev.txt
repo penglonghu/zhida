@@ -1,0 +1,5 @@
+# 开发/质量门禁依赖（仅本地开发与 CI 使用，不随服务部署）—— 用法：pip install -r requirements-dev.txt
+# 注意：tests/test_llm.py 会真实调用 LLM 网关，不属于离线单元测试，CI 不执行它（见 .github/workflows/ci.yml）。
+
+ruff==0.17.5
+pytest==9.2.0

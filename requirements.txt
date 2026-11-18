@@ -1,21 +1,24 @@
+# 依赖锁定于 2026-11-18（Python 3.14.3，取本地 .venv 实测版本，仅锁直接依赖）
+# 升级方式：pip install -U <包名> 验证启动/检索正常后，同步更新本文件与 .github/workflows/ci.yml 的冒烟子集
 # 原有
-fastapi
-uvicorn
-httpx
-python-dotenv
-pydantic-settings
-requests
-tenacity
-# 新增 RAG
-sentence-transformers
-qdrant-client
-pypdf
-python-multipart
+fastapi==0.162.0
+uvicorn==0.54.0
+httpx==0.28.1
+python-dotenv==1.2.4
+pydantic-settings==2.16.2
+pydantic==2.14.1
+requests==2.34.2
+tenacity==9.2.1
+# 新增 RAG（torch 由 Dockerfile 单独预装 CPU 版，本文件不锁，避免 Linux 下误拉 ~2GB CUDA 依赖）
+sentence-transformers==6.2.0
+qdrant-client==1.20.0
+pypdf==6.21.2
+python-multipart==0.0.32
 # 扫描件 OCR（图片型 PDF）
-pymupdf
-rapidocr-onnxruntime
-pillow
+pymupdf==2.1
+rapidocr-onnxruntime==1.2.3
+pillow==13.0.0
 # 多实例高可用：会话存储/限流共享状态（redis_enabled=true 时启用）
-redis
+redis==8.1.0
 # 监控：/metrics 暴露 Prometheus 标准指标
-prometheus-client
+prometheus-client==0.26.0

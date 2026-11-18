@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# pip 镜像源：默认清华（国内直连可用），客户内网可通过 build-arg 覆盖为自建源
+# pip 镜像源：默认清华源（国内快），海外或私有环境用 build-arg 覆盖
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 # CPU 版 torch 源：RAG 用 CPU 推理，避免拉 ~2GB 的 CUDA nvidia 依赖
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu

@@ -59,3 +59,14 @@ deploy/certs/
 # ===== DeepSeek 账单统计（含 user_id/api_key 名，敏感，不入库）=====
 amount-*.csv
 cost-*.csv
+# ===== 工具与测试缓存 =====
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# ===== 本地写作草稿（文章素材，不入库）=====
+docs/wechat_*.md
+docs_local/
+*.draft.md

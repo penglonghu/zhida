@@ -2,6 +2,12 @@
 
 RAG 知识库问答系统：上传文档 → 分块 → 本地 BGE 嵌入 → Qdrant 向量检索 → 大模型基于原文作答。支持混合检索、多轮对话、流式输出，内置安全与可观测能力，面向政企私有化交付。
 
+**解决什么问题**：内部文档散落在 PDF、Word、网页和网盘里，关键词搜不到，通用大模型又不了解你的资料、答不准还会编造。知答把文档灌进知识库，回答只依据检索到的原文片段，并给出 `[n]` 引用，方便逐条核对。
+
+**适合谁**：需要私有化部署、数据不出内网、自己提供 DeepSeek（或其他 OpenAI 兼容网关）的团队；想在一台普通机器上跑通「上传文档 → 提问 → 带引用回答」，而不是引入一整套大模型平台。
+
+**适合的规模**：单机 Qdrant + 本地嵌入，部门级知识库（万级到十万级文本块）；会话与限流默认进程内实现，多实例部署时再开 Redis。
+
 ## 技术栈
 
 | 层 | 技术 |
@@ -48,31 +54,94 @@ RAG 知识库问答系统：上传文档 → 分块 → 本地 BGE 嵌入 → Qd
 └── docker-compose.yml
 ```
 
+## 架构概览
+
+![知答 ZhiDa 架构](docs/architecture.png)
+
+- **问答通路**：浏览器 / API 客户端 → nginx（静态托管 + SSE 反代）→ FastAPI（认证、限流、TraceID、审计日志）→ 混合检索（本地 BGE 稠密 + BM25 关键词 → 加权 RRF → 文档级聚合）→ DeepSeek 流式生成 → 答案带 `[n]` 引用回链。
+- **入库通路**：上传 pdf/txt/md → nginx → `POST /upload-doc` 解析（pypdf 文本层，扫描件回退 RapidOCR）→ 分块 500 字 / 重叠 80 → 本地 BGE 嵌入 → Qdrant（集合 `zhida`，COSINE，payload 带 `tenant_id` / `kb_id`）。
+- **共享依赖**：Redis（会话 / 限流共享态，可选）、Prometheus `/metrics`、本地模型文件 `models/bge-small-zh`、`scripts/backup.sh`。图源为 `docs/architecture.src.html`（1080×700，2 倍缩放截图）。
+
 ## 快速开始
 
-### 本地运行
+### 本地运行（约 15 分钟）
 
-依赖：Python 3.14、Qdrant（本机 6333 端口）、DeepSeek API Key。
+前置：Python 3.13+（开发与镜像用 3.14）；Docker（或本机已有 Qdrant 6333 端口）；一个可用的 DeepSeek 兼容网关地址与 API Key。
+
+按顺序执行，注释里是预期结果：
 
 ```bash
-# 1. 安装依赖
+# 1. 启动 Qdrant，数据落在 qdrant_storage/
+docker run -d --name zhida-qdrant -p 6333:6333 \
+  -v "$(pwd)/qdrant_storage:/qdrant/storage" qdrant/qdrant
+curl -s http://127.0.0.1:6333/healthz; echo   # → healthz check passed
+
+# 2. 安装依赖
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 2. 下载嵌入模型（首次）
+# 3. 下载嵌入模型（约 100MB，落到 models/bge-small-zh）
 python download_bge.py
 
-# 3. 配置环境变量
-cp .env.example .env   # 填入 LLM_API_KEY 等真实值
-
-# 4. 启动 Qdrant（本地）
-docker run -p 6333:6333 -v $(pwd)/qdrant_storage:/qdrant/storage qdrant/qdrant
-
-# 5. 启动服务
-python main.py
+# 4. 生成配置文件
+cp .env.example .env
 ```
 
-打开 `chat.html` 即可提问（注意 API 地址默认 `http://127.0.0.1:8000`）。
+第 4 步之后、启动服务之前，至少改这几项，其余保持默认即可：
+
+| 变量 | 本地运行改为 | 原因 |
+|---|---|---|
+| `LLM_API_KEY` | 你的真实 Key | 模板里是占位符 `your-deepseek-api-key-here`，请求会 401 |
+| `QDRANT_HOST` | `127.0.0.1` | 模板默认 `qdrant` 是 Docker Compose 内的服务名 |
+| `EMBED_DEVICE` | 保持 `cpu` | Apple Silicon 想用 GPU 可改 `mps`；容器内必须是 `cpu` |
+| `SESSION_SECRET` | `openssl rand -hex 32` 的输出 | 开启 `AUTH_ENABLED=true` 时必填，否则登录 Cookie 无法签名 |
+
+然后启动并做自检：
+
+```bash
+# 5. 启动服务（前台运行，保持这个终端）
+python main.py
+
+# 6. 另开终端：存活 / 就绪
+curl -s http://127.0.0.1:8000/health; echo
+curl -s http://127.0.0.1:8000/ready; echo
+
+# 7. 灌入 3 份示例文档（每份 3 块，共 9 块）
+for f in samples/service-manual.md samples/attendance-policy.md samples/support-faq.md; do
+  curl -s -X POST http://127.0.0.1:8000/upload-doc -F "file=@$f"; echo
+done
+
+# 8. 用示例问题验证（问题、预期答案与预期来源见 samples/README.md）
+curl -s -X POST http://127.0.0.1:8000/query -H 'Content-Type: application/json' \
+  -d '{"question":"员工可以享受哪些假期？分别有多少天？"}'
+```
+
+几点说明：
+
+- 嵌入模型是懒加载的：第一次上传或检索时才出现 `开始加载模型: ./models/bge-small-zh` 和 `模型加载完成` 两行日志，这期间该请求会慢一些；之后才稳定在秒级响应。
+- 首次上传会在 Qdrant 建集合 `zhida`（日志 `创建集合 zhida, dim=512`）。
+- `/ready` 的 `embedding_model` 只检查模型目录里有没有 `config_sentence_transformers.json`，不会真的跑一次推理。
+- 浏览器直接打开 `chat.html` 即可提问：file:// 下前端自动请求 `http://127.0.0.1:8000`；要换入口地址，改 `chat.html` 里的 `API_BASE`。
+- 示例问题、预期答案和预期来源见 [samples/README.md](samples/README.md)。
+
+### 15 分钟验证清单
+
+按顺序对一遍，全部通过即可认为本地环境跑通（`curl -s` 只是静音进度，输出即响应体）：
+
+| # | 检查点 | 命令 | 通过标准 |
+|---|---|---|---|
+| 1 | Qdrant 就绪 | `curl -s http://127.0.0.1:6333/healthz; echo` | 输出 `healthz check passed` |
+| 2 | 服务存活 | `curl -s http://127.0.0.1:8000/health; echo` | 输出 `{"status":"ok","name":"知答 ZhiDa","version":"0.1.0"}` |
+| 3 | 依赖就绪 | `curl -s http://127.0.0.1:8000/ready; echo` | 输出 `{"ready":true,"checks":{"qdrant":"ok","embedding_model":"ok"}}`；若返回 503，看 `checks` 里哪项不是 `ok` |
+| 4 | 示例入库 | `for f in samples/service-manual.md samples/attendance-policy.md samples/support-faq.md; do curl -s -X POST http://127.0.0.1:8000/upload-doc -F "file=@$f"; echo; done` | 三行 `{"msg":"文件入库成功","chunk_count":3}` |
+| 5 | 列举型问答 | `curl -s -X POST http://127.0.0.1:8000/query -H 'Content-Type: application/json' -d '{"question":"员工可以享受哪些假期？分别有多少天？"}'` | `success` 为 `true`，`answer` 列出年假/病假/事假等的天数，`sources` 中 `doc_name` 含 `attendance-policy.md` |
+| 6 | 跨文档问答 | `curl -s -X POST http://127.0.0.1:8000/query -H 'Content-Type: application/json' -d '{"question":"旗舰版客户遇到 P1 严重故障时，应该通过哪些渠道提交工单？首次响应时限是多久？"}'` | 预期 `sources` 同时出现 `support-faq.md` 与 `service-manual.md`，答案给出支持渠道与 15 分钟首次响应 |
+| 7 | 流式输出 | `curl -N -s -X POST http://127.0.0.1:8000/stream-query -H 'Content-Type: application/json' -d '{"question":"员工可以享受哪些假期？"}'` | 先逐条 `data: "..."` 文本，最后是 `data: {"type": "sources", ...}` 与 `data: [DONE]` |
+| 8 | 无资料兜底 | `curl -s -X POST http://127.0.0.1:8000/query -H 'Content-Type: application/json' -d '{"question":"公司年会在哪里举办？"}'` | `answer` 为 `当前资料中没有该问题相关内容`，`sources` 为空数组 |
+| 9 | 指标 | `curl -s http://127.0.0.1:8000/metrics \| head -3` | 输出以 `# HELP` / `# TYPE` 开头的 Prometheus 文本 |
+| 10 | 审计日志 | `grep ' audit ' logs/service.log \| tail -3` | 每行含 `trace=` 与 `audit method=... path=... status=... tenant=... cost_ms=...` |
+
+想清空知识库重跑：`curl -s -X POST "http://127.0.0.1:8000/clear-collection?kb_id=default"; echo`（预期 `{"msg":"知识库已清空（tenant=default, kb=default）"}`）。未开启 Redis 时会话存在进程内存，重启服务即清空。
 
 ### Docker 部署
 

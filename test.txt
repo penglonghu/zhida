@@ -1,1 +1,0 @@
-知答（ZhiDa）是一款 RAG 知识库问答系统，基于本地 BGE 向量模型 + Qdrant 向量库 + DeepSeek 大模型，实现文档检索增强问答。
