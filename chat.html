@@ -89,6 +89,62 @@
             font-size: 12px;
             color: #6b7280;
         }
+        .doc-area {
+            padding: 12px 20px;
+            border-bottom: 1px solid #eee;
+            background: #fff;
+        }
+        .doc-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            font-size: 13px;
+            font-weight: 500;
+            color: #374151;
+        }
+        .doc-count {
+            font-weight: 400;
+            color: #6b7280;
+        }
+        .doc-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-height: 160px;
+            overflow-y: auto;
+        }
+        .doc-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            background: #f9fafb;
+            border: 1px solid #eef0f2;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+        .doc-name {
+            flex: 1;
+            color: #374151;
+            word-break: break-all;
+        }
+        .doc-meta {
+            color: #6b7280;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+        .doc-del {
+            height: 26px;
+            padding: 0 10px;
+            font-size: 12px;
+            background: #ef4444;
+        }
+        .doc-empty {
+            padding: 4px 0;
+            color: #9ca3af;
+            font-size: 13px;
+        }
         .login-overlay {
             position: fixed;
             inset: 0;
@@ -337,6 +393,14 @@
         <span class="kb-hint" id="kbHint">切换知识库会新开会话</span>
     </div>
 
+    <div class="doc-area">
+        <div class="doc-header">
+            <span>文档</span>
+            <span class="doc-count" id="docCount"></span>
+        </div>
+        <div class="doc-list" id="docList"></div>
+    </div>
+
     <div class="upload-area">
         <input type="file" id="fileInput" accept=".txt,.md,.pdf">
         <button class="upload-btn" id="uploadBtn">上传文档</button>
@@ -357,6 +421,7 @@ const API_BASE = location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
 const API_STREAM_URL = API_BASE + "/stream-query";
 const API_UPLOAD_URL = API_BASE + "/upload-doc";
 const API_KBS_URL = API_BASE + "/knowledge-bases";
+const API_DOCS_URL = API_BASE + "/documents";
 const API_ME_URL = API_BASE + "/me";
 const API_LOGIN_URL = API_BASE + "/login";
 const API_LOGOUT_URL = API_BASE + "/logout";
@@ -373,6 +438,8 @@ const kbInput = document.getElementById("kbInput");
 const kbList = document.getElementById("kbList");
 const kbRefreshBtn = document.getElementById("kbRefreshBtn");
 const kbHint = document.getElementById("kbHint");
+const docCount = document.getElementById("docCount");
+const docList = document.getElementById("docList");
 const loginOverlay = document.getElementById("loginOverlay");
 const loginForm = document.getElementById("loginForm");
 const loginUser = document.getElementById("loginUser");
@@ -422,6 +489,7 @@ async function checkAuth() {
             logoutBtn.style.display = "none";
         }
         await loadKbs();
+        await loadDocuments();
     } catch (e) {
         showLogin("服务不可用：" + e.message);
     }
@@ -503,6 +571,91 @@ function switchKb() {
     hideTip();
     kbHint.textContent = `已切换到 ${kb}，新会话已开始`;
     loadKbs();
+    loadDocuments();
+}
+
+async function loadDocuments() {
+    try {
+        const kb = encodeURIComponent(currentKb());
+        const res = await fetch(`${API_DOCS_URL}?kb_id=${kb}`, { credentials: "same-origin" });
+        if (res.status === 401) {
+            showLogin("登录已失效，请重新登录");
+            return;
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        renderDocuments(data.documents || []);
+    } catch (e) {
+        console.warn("文档列表获取失败", e);
+        docCount.textContent = "";
+        docList.innerHTML = "";
+        const empty = document.createElement("div");
+        empty.className = "doc-empty";
+        empty.textContent = "文档列表获取失败";
+        docList.appendChild(empty);
+    }
+}
+
+function renderDocuments(docs) {
+    docList.innerHTML = "";
+    docCount.textContent = docs.length ? `${docs.length} 份` : "";
+    if (!docs.length) {
+        const empty = document.createElement("div");
+        empty.className = "doc-empty";
+        empty.textContent = "暂无文档";
+        docList.appendChild(empty);
+        return;
+    }
+    for (const d of docs) {
+        const item = document.createElement("div");
+        item.className = "doc-item";
+
+        const name = document.createElement("span");
+        name.className = "doc-name";
+        name.textContent = d.doc_name;
+
+        const meta = document.createElement("span");
+        meta.className = "doc-meta";
+        meta.textContent = `${d.chunk_count} 块`;
+
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "doc-del";
+        del.textContent = "删除";
+        del.addEventListener("click", () => deleteDocument(d.doc_name, d.chunk_count));
+
+        item.appendChild(name);
+        item.appendChild(meta);
+        item.appendChild(del);
+        docList.appendChild(item);
+    }
+}
+
+async function deleteDocument(docName, chunkCount) {
+    if (!confirm(`确定删除文档「${docName}」？将移除 ${chunkCount} 个文本块，且不可恢复。`)) {
+        return;
+    }
+    try {
+        const kb = encodeURIComponent(currentKb());
+        const name = encodeURIComponent(docName);
+        const res = await fetch(`${API_DOCS_URL}/${name}?kb_id=${kb}`, {
+            method: "DELETE",
+            credentials: "same-origin"
+        });
+        if (res.status === 401) {
+            showLogin("登录已失效，请重新登录");
+            return;
+        }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            throw new Error(data.detail || `HTTP ${res.status}`);
+        }
+        showTip(`已删除「${docName}」，移除 ${data.removed_chunks} 个文本块`, true);
+        await loadDocuments();
+    } catch (e) {
+        console.error(e);
+        showTip("删除失败：" + e.message);
+    }
 }
 
 marked.setOptions({
@@ -650,6 +803,7 @@ async function uploadFile(){
         showTip(`✅ 上传成功（知识库：${currentKb()}），chunk数量：${data.chunk_count}`, true);
         fileInput.value = "";
         loadKbs();
+        loadDocuments();
     }catch(e){
         console.error(e);
         showTip("上传异常：" + e.message);
@@ -766,7 +920,10 @@ kbInput.addEventListener("keydown", (e) => {
         kbInput.blur();   // 触发 change，切换知识库
     }
 });
-kbRefreshBtn.addEventListener("click", loadKbs);
+kbRefreshBtn.addEventListener("click", () => {
+    loadKbs();
+    loadDocuments();
+});
 checkAuth();
 
 questionInput.addEventListener("keydown", (e) => {

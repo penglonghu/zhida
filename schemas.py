@@ -47,6 +47,17 @@ class ChunkListResponse(BaseModel):
 class KnowledgeBaseListResponse(BaseModel):
     kbs: List[str]
 
+class DocumentInfo(BaseModel):
+    doc_name: str
+    chunk_count: int
+
+class DocumentListResponse(BaseModel):
+    documents: List[DocumentInfo] = []
+
+class DocumentDeleteResponse(BaseModel):
+    msg: str
+    removed_chunks: int
+
 # ===== 登录 =====
 class LoginRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)

@@ -293,10 +293,25 @@ scrape_configs:
 | POST | `/clear-collection` | 清空当前租户的某个知识库（`?kb_id=`） |
 | POST | `/clear-session` | 清除当前租户的某会话历史 |
 | GET | `/knowledge-bases` | 列出当前租户的知识库（前端选择器用） |
+| GET | `/documents` | 列出当前租户/知识库的文档与块数（同名文档聚合） |
+| DELETE | `/documents/{doc_name}` | 删除整份文档（该文档名下的全部块） |
 | GET | `/list-chunks` | 调试：查看当前租户/知识库的文本块 |
 | GET | `/health` | 存活探针 |
 | GET | `/ready` | 就绪探针（Qdrant/Redis 连通 + 模型文件） |
 | GET | `/metrics` | Prometheus 指标（不鉴权，探针与抓取不计入限流） |
+
+### 文档管理示例
+
+```bash
+# 列出文档：同一文档名的多个块聚合为一条
+curl 'http://localhost:8080/documents?kb_id=default'
+
+# 删除整份文档（文档名需要 URL 编码）
+curl -X DELETE 'http://localhost:8080/documents/%E5%90%88%E5%90%8C.pdf?kb_id=default'
+# → {"msg":"文档已删除：合同.pdf","removed_chunks":13}
+```
+
+同名文档重复上传视为同一份文档，删除时该名字下的全部块一并移除。
 
 ### 多轮对话示例
 

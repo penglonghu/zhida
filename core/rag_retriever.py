@@ -29,6 +29,13 @@ class RetrievalHit:
     kb_id: str = ""
 
 
+@dataclass
+class DocumentSummary:
+    """文档级摘要：文档名 + 文本块数量"""
+    doc_name: str
+    chunk_count: int
+
+
 class Retriever:
     def __init__(self):
         self._client = None
@@ -70,9 +77,9 @@ class Retriever:
                 collection_name=self.collection_name,
                 vectors_config=VectorParams(size=self.vector_dim, distance=Distance.COSINE),
             )
-        # 租户/知识库过滤字段建索引，否则大库过滤会退化成全表扫
+        # 租户/知识库/文档名过滤字段建索引，否则大库过滤会退化成全表扫
         existing = (self.client.get_collection(self.collection_name).payload_schema or {})
-        for field in ("tenant_id", "kb_id"):
+        for field in ("tenant_id", "kb_id", "doc_name"):
             if field not in existing:
                 self.client.create_payload_index(
                     collection_name=self.collection_name,
@@ -262,6 +269,52 @@ class Retriever:
         tenant_id = settings.default_tenant_id if tenant_id is None else tenant_id
         self._load_points()
         return sorted({h.kb_id for h in self._points.values() if h.tenant_id == tenant_id})
+
+    def list_documents(self, tenant_id: Optional[str] = None,
+                       kb_id: Optional[str] = None) -> List[DocumentSummary]:
+        """按 scope 聚合文档：直接查 Qdrant，避免多实例下读到进程内过期缓存。"""
+        self.ensure_collection()
+        tenant_id, kb_id = self._scope(tenant_id, kb_id)
+        counts: Dict[str, int] = {}
+        offset = None
+        while True:
+            res, offset = self.client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=self._scope_filter(tenant_id, kb_id),
+                with_payload=["doc_name"],
+                with_vectors=False,
+                limit=500,
+                offset=offset,
+            )
+            for p in res:
+                name = (p.payload or {}).get("doc_name", "")
+                if name:
+                    counts[name] = counts.get(name, 0) + 1
+            if offset is None:
+                break
+        return [DocumentSummary(doc_name=n, chunk_count=c) for n, c in sorted(counts.items())]
+
+    def delete_document(self, tenant_id: str, kb_id: str, doc_name: str) -> int:
+        """删除某文档在当前 scope 下的全部块，返回删除的块数。"""
+        self.ensure_collection()
+        flt = Filter(must=[
+            FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id)),
+            FieldCondition(key="kb_id", match=MatchValue(value=kb_id)),
+            FieldCondition(key="doc_name", match=MatchValue(value=doc_name)),
+        ])
+        count = self.client.count(
+            collection_name=self.collection_name,
+            count_filter=flt,
+            exact=True,
+        ).count
+        if count == 0:
+            return 0
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=FilterSelector(filter=flt),
+        )
+        self._invalidate_cache()
+        return count
 
     def list_all_chunks(self, tenant_id: Optional[str] = None,
                         kb_id: Optional[str] = None) -> List[str]:

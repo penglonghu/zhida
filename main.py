@@ -13,6 +13,7 @@ from schemas import (
     QueryRequest, QueryResponse, StreamQueryRequest, UploadResponse,
     ClearResponse, ChunkListResponse, KnowledgeBaseListResponse, SessionClearRequest, Source,
     LoginRequest, LoginResponse, MeResponse,
+    DocumentInfo, DocumentListResponse, DocumentDeleteResponse,
 )
 from core.auth import authenticate, create_session_token, parse_users
 from core.llm import llm_client
@@ -370,6 +371,28 @@ def list_knowledge_bases(request: Request):
     kbs.add(settings.default_kb_id)
     ordered = sorted(kbs, key=lambda k: (k != settings.default_kb_id, k))
     return KnowledgeBaseListResponse(kbs=ordered)
+
+
+@app.get("/documents", response_model=DocumentListResponse, summary="列出当前知识库的文档")
+def list_documents(request: Request, kb_id: Optional[str] = Query(None)):
+    tenant_id, kb_id = _scope_from(request, kb_id)
+    docs = retriever.list_documents(tenant_id, kb_id)
+    logger.info("文档列表 tenant=%s, kb=%s, count=%s", tenant_id, kb_id, len(docs))
+    return DocumentListResponse(
+        documents=[DocumentInfo(doc_name=d.doc_name, chunk_count=d.chunk_count) for d in docs]
+    )
+
+
+@app.delete("/documents/{doc_name}", response_model=DocumentDeleteResponse, summary="删除整份文档")
+def delete_document(doc_name: str, request: Request, kb_id: Optional[str] = Query(None)):
+    if not doc_name.strip() or any(token in doc_name for token in ("/", "\\", "..")):
+        raise HTTPException(status_code=400, detail="文档名非法")
+    tenant_id, kb_id = _scope_from(request, kb_id)
+    removed = retriever.delete_document(tenant_id, kb_id, doc_name)
+    if removed == 0:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    logger.info("删除文档 tenant=%s, kb=%s, doc=%s, chunks=%s", tenant_id, kb_id, doc_name, removed)
+    return DocumentDeleteResponse(msg=f"文档已删除：{doc_name}", removed_chunks=removed)
 
 
 @app.get("/list-chunks", response_model=ChunkListResponse, summary="调试接口：查看当前知识库的文本块")
