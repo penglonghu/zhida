@@ -153,7 +153,8 @@ python download_bge.py
 cp .env.example .env   # 填入真实 LLM_API_KEY
 
 # 3. 构建并启动（nginx + zhida + qdrant + redis 四个服务）
-docker compose up -d --build
+#    首次会构建依赖基础镜像（几分钟）；之后改代码只重建应用层（秒级）
+./scripts/build-zhida.sh --up
 
 # 4. 验证（统一走 nginx 入口；宿主机映射 8080，避免与本机其他 80 服务冲突）
 curl http://localhost:8080/health
@@ -161,6 +162,16 @@ curl http://localhost:8080/ready
 ```
 
 浏览器打开 `http://localhost:8080` 即可使用（nginx 托管 chat.html 并反代 API）。
+
+**构建机制**：依赖装在独立的命名基础镜像 `fde-demo-zhida-base`（`Dockerfile.base`）里，只有 `requirements.txt` 或 `Dockerfile.base` 变化才重建；`Dockerfile` 只复制代码。pip 使用缓存挂载，且构建期强制直连 + 国内镜像（清华 PyPI / 阿里 PyTorch CPU），不再受本机代理链路影响。日常改代码的构建**完全离线**（约 1~3 秒）；只有重建依赖层时才需要可访问镜像源的网络。常用命令：
+
+```bash
+./scripts/build-zhida.sh                 # 只重建应用层（依赖没变时秒级）
+./scripts/build-zhida.sh --up            # 构建后重启 zhida
+./scripts/build-zhida.sh --rebuild-base  # 依赖或基础镜像需要强制重建
+```
+
+直接 `docker compose up -d --build` 在基础镜像已存在时也可用；基础镜像缺失时请先跑上述脚本。
 
 compose 会自动覆盖 `QDRANT_HOST=qdrant`、`EMBED_DEVICE=cpu`、`REDIS_ENABLED=true`、`REDIS_HOST=redis`（容器内网络名、Linux 推理设备、多实例共享态）。生产形态下应用（zhida）与向量库（qdrant）不对外暴露端口，统一由 nginx 入口。
 
@@ -171,8 +182,10 @@ compose 会自动覆盖 `QDRANT_HOST=qdrant`、`EMBED_DEVICE=cpu`、`REDIS_ENABL
 scripts/gen_self_signed_cert.sh
 # deploy/certs/fullchain.pem + privkey.pem
 
-# 2. 用 TLS 覆盖层启动（HTTP 仅保留 /health、/ready，其余 301 到 HTTPS）
-docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
+# 2. 先构建镜像，再用 TLS 覆盖层启动
+#    （HTTP 仅保留 /health、/ready，其余 301 到 HTTPS）
+./scripts/build-zhida.sh
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
 
 # 3. 访问
 #    本地：https://localhost:8443
