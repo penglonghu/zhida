@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.auth import hash_password
+from core.auth import hash_password, validate_password
 
 
 def main():
@@ -21,8 +21,9 @@ def main():
     args = parser.parse_args()
 
     password = getpass.getpass("密码: ")
-    if len(password) < 8:
-        print("密码至少 8 位", file=sys.stderr)
+    reason = validate_password(password, args.user)
+    if reason:
+        print(reason, file=sys.stderr)
         sys.exit(1)
     confirm = getpass.getpass("再输入一次: ")
     if password != confirm:
