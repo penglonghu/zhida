@@ -5,6 +5,7 @@ import re
 import tempfile
 import time
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query, Request, Response
@@ -15,7 +16,8 @@ from schemas import (
     LoginRequest, LoginResponse, MeResponse,
     DocumentInfo, DocumentListResponse, DocumentDeleteResponse,
 )
-from core.auth import authenticate, create_session_token, parse_users
+from core.auth import create_session_token, verify_login
+from core import user_store
 from core.llm import llm_client
 from core.rag_retriever import retriever, RetrievalHit
 from core.embedding import embedding_client
@@ -34,7 +36,21 @@ from core.logging import setup_logging
 setup_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="知答 ZhiDa", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if settings.auth_enabled:
+        try:
+            imported = await user_store.seed_from_env(settings.auth_users)
+            if imported:
+                logger.info("账号种子导入完成 count=%d", imported)
+        except Exception as e:
+            # 启动不因存储故障失败；请求期由 fail-closed 兜底
+            logger.error("账号种子导入失败: %s", e)
+    yield
+
+
+app = FastAPI(title="知答 ZhiDa", version="0.1.0", lifespan=lifespan)
 
 # 中间件注册顺序（Starlette 后 add 的在外层、先执行）：
 # RateLimit(最内) -> Audit -> Auth -> Trace -> CORS -> Metrics(最外)
@@ -61,16 +77,27 @@ def _scope_from(request: Request, kb_id: Optional[str] = None) -> tuple[str, str
 
 
 @app.post("/login", response_model=LoginResponse, summary="浏览器登录（下发 httpOnly Cookie）")
-def login(req: LoginRequest, response: Response):
+async def login(req: LoginRequest, response: Response):
     if not settings.auth_enabled:
         return LoginResponse(username="anonymous", tenant=settings.default_tenant_id)
     if not settings.session_secret:
         raise HTTPException(status_code=500, detail="服务未配置 SESSION_SECRET")
-    tenant = authenticate(parse_users(settings.auth_users), req.username, req.password)
-    if tenant is None:
+    try:
+        record = await user_store.get_user(req.username)
+    except Exception as e:
+        logger.error("登录失败：账号存储不可用 %s", e)
+        raise HTTPException(status_code=503, detail="账号存储不可用")
+    # PBKDF2 是 CPU 密集操作，放线程池避免阻塞事件循环
+    password_ok = await asyncio.to_thread(
+        verify_login, req.password, record.password_hash if record else None
+    )
+    if record is None or not password_ok:
         logger.warning("登录失败 user=%s", req.username)
         raise HTTPException(status_code=401, detail="用户名或密码错误")
-    token = create_session_token(req.username, settings.session_secret, settings.session_ttl_seconds)
+    tenant = record.tenant
+    token = create_session_token(
+        req.username, settings.session_secret, settings.session_ttl_seconds, record.version
+    )
     response.set_cookie(
         key=settings.cookie_name,
         value=token,
@@ -422,7 +449,7 @@ async def ready():
         checks["qdrant"] = f"down: {e}"
     model_dir = Path(settings.embed_model_name)
     checks["embedding_model"] = "ok" if (model_dir / "config_sentence_transformers.json").exists() else "missing"
-    if settings.redis_enabled:
+    if settings.redis_enabled or settings.auth_enabled:
         try:
             from core.redis_client import get_redis
             await get_redis().ping()

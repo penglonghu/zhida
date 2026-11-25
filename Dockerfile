@@ -1,25 +1,9 @@
-FROM python:3.14
+# 应用层镜像：只复制代码，依赖来自 Dockerfile.base 构建的命名基础镜像。
+# 用 scripts/build-zhida.sh 构建（会自动准备基础镜像）。
+ARG BASE_IMAGE=fde-demo-zhida-base:latest
+FROM ${BASE_IMAGE}
 
 WORKDIR /app
-
-# OCR 图像渲染系统依赖：opencv-python 需要 libGL.so.1 与 libglib2.0-0
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 \
-        libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
-
-# pip 镜像源：默认清华源（国内快），海外或私有环境用 build-arg 覆盖
-ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-# CPU 版 torch 源：RAG 用 CPU 推理，避免拉 ~2GB 的 CUDA nvidia 依赖
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
-
-# 先复制依赖，利用 docker 层缓存
-COPY requirements.txt .
-
-# 先装 CPU 版 torch（体积小、无 nvidia 依赖），再装其余依赖；网络慢加大超时
-RUN pip install --no-cache-dir --timeout 300 torch \
-      --index-url ${TORCH_INDEX_URL} --extra-index-url ${PIP_INDEX_URL} && \
-    pip install --no-cache-dir --timeout 300 -r requirements.txt -i ${PIP_INDEX_URL}
 
 COPY . .
 

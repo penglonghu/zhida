@@ -1,0 +1,26 @@
+# 依赖基础镜像：只有 requirements.txt 或本文件变化时才需要重建。
+# 代码变更走 Dockerfile（应用层），不会触发重新安装依赖。
+FROM python:3.14
+
+WORKDIR /app
+
+# OCR 图像渲染系统依赖：opencv-python 需要 libGL.so.1 与 libglib2.0-0
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 国内镜像默认值；海外/私有环境用 --build-arg 覆盖。
+# torch 用阿里 CPU wheel 镜像（国内快，且避免 x86 上拉 CUDA 依赖）。
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG TORCH_INDEX_URL=https://mirrors.aliyun.com/pytorch-wheels/cpu/
+
+COPY requirements.txt .
+
+# pip 缓存挂载：即使本层重建，已下载的 wheel 仍可复用
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --retries 10 --timeout 120 "torch==2.15.0+cpu" \
+      --find-links "${TORCH_INDEX_URL}" \
+      --index-url "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple && \
+    pip install --retries 10 --timeout 120 -r requirements.txt \
+      -i "${PIP_INDEX_URL}" --extra-index-url https://pypi.org/simple

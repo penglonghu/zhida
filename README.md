@@ -15,7 +15,7 @@ RAG 知识库问答系统：上传文档 → 分块 → 本地 BGE 嵌入 → Qd
 | 接入层 | FastAPI（异步，SSE 流式） |
 | 推理层 | DeepSeek（OpenAI 兼容网关，httpx 异步 + 指数退避重试） |
 | 检索层 | 本地 BGE-small-zh 稠密向量 + BM25 关键词，加权 RRF 融合 |
-| 存储层 | Qdrant 向量库 + Redis（会话/限流共享态，可选） |
+| 存储层 | Qdrant 向量库 + Redis（会话/限流共享态，可选；开启认证时账号也存 Redis） |
 | 前端 | chat.html（原生 JS + marked 渲染） |
 
 ## 核心特性
@@ -153,7 +153,8 @@ python download_bge.py
 cp .env.example .env   # 填入真实 LLM_API_KEY
 
 # 3. 构建并启动（nginx + zhida + qdrant + redis 四个服务）
-docker compose up -d --build
+#    首次会构建依赖基础镜像（几分钟）；之后改代码只重建应用层（秒级）
+./scripts/build-zhida.sh --up
 
 # 4. 验证（统一走 nginx 入口；宿主机映射 8080，避免与本机其他 80 服务冲突）
 curl http://localhost:8080/health
@@ -161,6 +162,16 @@ curl http://localhost:8080/ready
 ```
 
 浏览器打开 `http://localhost:8080` 即可使用（nginx 托管 chat.html 并反代 API）。
+
+**构建机制**：依赖装在独立的命名基础镜像 `fde-demo-zhida-base`（`Dockerfile.base`）里，只有 `requirements.txt` 或 `Dockerfile.base` 变化才重建；`Dockerfile` 只复制代码。pip 使用缓存挂载，且构建期强制直连 + 国内镜像（清华 PyPI / 阿里 PyTorch CPU），不再受本机代理链路影响。日常改代码的构建**完全离线**（约 1~3 秒）；只有重建依赖层时才需要可访问镜像源的网络。常用命令：
+
+```bash
+./scripts/build-zhida.sh                 # 只重建应用层（依赖没变时秒级）
+./scripts/build-zhida.sh --up            # 构建后重启 zhida
+./scripts/build-zhida.sh --rebuild-base  # 依赖或基础镜像需要强制重建
+```
+
+直接 `docker compose up -d --build` 在基础镜像已存在时也可用；基础镜像缺失时请先跑上述脚本。
 
 compose 会自动覆盖 `QDRANT_HOST=qdrant`、`EMBED_DEVICE=cpu`、`REDIS_ENABLED=true`、`REDIS_HOST=redis`（容器内网络名、Linux 推理设备、多实例共享态）。生产形态下应用（zhida）与向量库（qdrant）不对外暴露端口，统一由 nginx 入口。
 
@@ -171,8 +182,10 @@ compose 会自动覆盖 `QDRANT_HOST=qdrant`、`EMBED_DEVICE=cpu`、`REDIS_ENABL
 scripts/gen_self_signed_cert.sh
 # deploy/certs/fullchain.pem + privkey.pem
 
-# 2. 用 TLS 覆盖层启动（HTTP 仅保留 /health、/ready，其余 301 到 HTTPS）
-docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d --build
+# 2. 先构建镜像，再用 TLS 覆盖层启动
+#    （HTTP 仅保留 /health、/ready，其余 301 到 HTTPS）
+./scripts/build-zhida.sh
+docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
 
 # 3. 访问
 #    本地：https://localhost:8443
@@ -273,12 +286,12 @@ scrape_configs:
 | `QDRANT_HOST` / `QDRANT_PORT` | 向量库地址（Docker 内用服务名 `qdrant`） |
 | `RETRIEVAL_MODE` | `hybrid`（混合）或 `dense`（纯稠密） |
 | `AUTH_ENABLED` | 认证开关（私有化交付置 true） |
-| `AUTH_USERS` / `SESSION_SECRET` | 浏览器登录账号（`用户名:密码哈希:租户`，逗号分隔）/ Cookie 签名密钥 |
+| `AUTH_USERS` / `SESSION_SECRET` | 首次启动导入 Redis 的种子账号（`用户名:密码哈希:租户`，逗号分隔）/ Cookie 签名密钥 |
 | `SESSION_TTL_SECONDS` / `COOKIE_SECURE` | 登录有效期 / HTTPS 部署置 true |
 | `SERVICE_API_KEY` / `TENANT_API_KEYS` | 程序调用密钥（映射 default 租户）/ 程序调用多租户映射 |
 | `DEFAULT_TENANT_ID` / `DEFAULT_KB_ID` | 未认证/未指定时的租户与知识库 |
 | `RATE_LIMIT_MAX_REQUESTS` / `RATE_LIMIT_WINDOW_SECONDS` | 限流阈值 / 窗口 |
-| `REDIS_ENABLED` / `REDIS_HOST` | 会话/限流共享存储开关 / 地址（多实例置 true） |
+| `REDIS_ENABLED` / `REDIS_HOST` | 会话/限流共享存储开关 / 地址（多实例置 true；认证开启时账号存储同样依赖 Redis） |
 
 ## API 一览
 
@@ -326,25 +339,29 @@ curl -X POST localhost:8000/query -H 'Content-Type: application/json' \
   -d '{"question":"那它的价格呢？","session_id":"<上一步的id>"}'
 ```
 
-### 浏览器登录（开启认证后）
+### 浏览器登录与账号管理（开启认证后）
 
-浏览器用户不需要接触 API Key，使用账号密码登录，服务端下发 httpOnly Cookie：
+浏览器用户不需要接触 API Key，使用账号密码登录，服务端下发 httpOnly Cookie。账号存在 Redis，改密/改租户/删号立即生效。
 
 ```bash
-# 1. 生成密码哈希（按提示输入密码）
+# 首次启动前可写种子账号（Redis 为空时导入一次）
 python scripts/hash_password.py --user alice --tenant tenantA
 # 输出：alice:pbkdf2_sha256|260000|...:tenantA
 
-# 2. 写入 .env
-AUTH_ENABLED=true
-AUTH_USERS=alice:pbkdf2_sha256|260000|...:tenantA,bob:pbkdf2_sha256|...:tenantB
-SESSION_SECRET=<openssl rand -hex 32>
-COOKIE_SECURE=false          # HTTPS 部署置 true
+# 服务启动后用 CLI 管理账号（推荐在容器内执行）
+docker compose exec zhida python scripts/manage_users.py add --user alice --tenant tenantA
+docker compose exec zhida python scripts/manage_users.py list
+docker compose exec zhida python scripts/manage_users.py passwd --user alice
+docker compose exec zhida python scripts/manage_users.py set-tenant --user alice --tenant tenantB
+docker compose exec zhida python scripts/manage_users.py remove --user alice
 ```
 
-- Cookie 为 `HttpOnly` + `SameSite=Lax`，有效期 `SESSION_TTL_SECONDS`（默认 8 小时），退出登录即失效。
-- 租户绑定在账号上；删账号/改租户在下一次请求立即生效。
-- 密码只存 PBKDF2-SHA256 哈希，不存明文。
+- `AUTH_USERS` 只在账号库为空时导入一次；之后以 Redis 为准，环境变量不再覆盖已有账号。
+- 改密 / 改租户 / 删号会立即使该账号已签发的 Cookie 失效（401），用户需重新登录；改造前签发的旧 Cookie 同样失效。
+- 密码至少 10 位且拒绝常见弱口令；重名账号默认拒绝，需 `--force` 才覆盖。
+- Cookie 为 `HttpOnly` + `SameSite=Lax`，有效期 `SESSION_TTL_SECONDS`（默认 8 小时），退出登录即清除。
+- Redis 不可用时登录与浏览器会话返回 503（fail-closed）；API Key 调用不受影响。
+- 账号变更写入 `logs/service.log` 审计记录；CLI 建议容器内执行，保证 Redis 地址与日志路径一致。
 
 ### 程序调用（API Key）
 
@@ -395,5 +412,6 @@ curl -X POST localhost:8000/query -H 'X-API-Key: keyA' \
 ## 已知限制
 
 - 会话存储、限流默认**进程内存实现**（单实例够用）；设 `REDIS_ENABLED=true` 即切 Redis 共享态，支持多实例横向扩展
+- 开启认证后账号存储依赖 Redis：Redis 数据丢失且账号库为空时才会从 `AUTH_USERS` 重建种子，非空但缺账号需人工 `manage_users.py add`；Redis 已纳入 `scripts/backup.sh` 备份
 - 混合检索权重（`RRF_KEYWORD_WEIGHT=3.0`）基于合成语料调优，上线前应在真实语料重新评估
 - 嵌入模型懒加载，首次请求会触发加载（数秒~数十秒）
